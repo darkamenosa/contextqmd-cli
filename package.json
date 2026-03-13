@@ -1,0 +1,28 @@
+{
+  "name": "contextqmd-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "contextqmd": "dist/index.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "test": "vitest run",
+    "check": "tsc --noEmit",
+    "link": "npm link"
+  },
+  "dependencies": {
+    "@tobilu/qmd": "^2.0.1",
+    "commander": "^14.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
