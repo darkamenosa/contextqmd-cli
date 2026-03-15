@@ -1,6 +1,5 @@
 export interface Library {
-  namespace: string;
-  name: string;
+  slug: string;
   display_name: string;
   aliases: string[];
   homepage_url: string;
@@ -52,8 +51,7 @@ export interface ManifestProfile {
 
 export interface Manifest {
   schema_version: string;
-  namespace: string;
-  name: string;
+  slug: string;
   display_name: string;
   version: string;
   channel: string;

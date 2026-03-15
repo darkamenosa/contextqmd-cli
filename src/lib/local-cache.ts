@@ -13,8 +13,7 @@ import { dirname, join } from "node:path";
 import type { PageRecord } from "./types.js";
 
 export interface InstalledLibrary {
-  namespace: string;
-  name: string;
+  slug: string;
   version: string;
   profile: "slim" | "full";
   installed_at: string;
@@ -51,96 +50,96 @@ export class LocalCache {
     mkdirSync(join(this.cacheDir, "tmp"), { recursive: true });
   }
 
-  docsDir(namespace: string, name: string, version: string): string {
-    return join(this.cacheDir, "docs", namespace, name, version);
+  docsDir(slug: string, version: string): string {
+    return join(this.cacheDir, "docs", slug, version);
   }
 
-  pagesDir(namespace: string, name: string, version: string): string {
-    return join(this.docsDir(namespace, name, version), "pages");
+  pagesDir(slug: string, version: string): string {
+    return join(this.docsDir(slug, version), "pages");
   }
 
-  saveManifest(namespace: string, name: string, version: string, manifest: unknown): void {
-    const dir = this.docsDir(namespace, name, version);
+  saveManifest(slug: string, version: string, manifest: unknown): void {
+    const dir = this.docsDir(slug, version);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2));
   }
 
-  savePageIndex(namespace: string, name: string, version: string, pageIndex: unknown): void {
-    const dir = this.docsDir(namespace, name, version);
+  savePageIndex(slug: string, version: string, pageIndex: unknown): void {
+    const dir = this.docsDir(slug, version);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "page-index.json"), JSON.stringify(pageIndex, null, 2));
   }
 
-  loadPageIndex(namespace: string, name: string, version: string): PageRecord[] {
-    const path = join(this.docsDir(namespace, name, version), "page-index.json");
+  loadPageIndex(slug: string, version: string): PageRecord[] {
+    const path = join(this.docsDir(slug, version), "page-index.json");
     if (!existsSync(path)) return [];
     return JSON.parse(readFileSync(path, "utf-8")) as PageRecord[];
   }
 
-  findPageByUid(namespace: string, name: string, version: string, pageUid: string): PageRecord | null {
-    return this.loadPageIndex(namespace, name, version).find(page => page.page_uid === pageUid) ?? null;
+  findPageByUid(slug: string, version: string, pageUid: string): PageRecord | null {
+    return this.loadPageIndex(slug, version).find(page => page.page_uid === pageUid) ?? null;
   }
 
-  findPageByPath(namespace: string, name: string, version: string, docPath: string): PageRecord | null {
+  findPageByPath(slug: string, version: string, docPath: string): PageRecord | null {
     const normalized = normalizeDocPath(docPath);
-    return this.loadPageIndex(namespace, name, version)
+    return this.loadPageIndex(slug, version)
       .find(page => normalizeDocPath(page.path) === normalized) ?? null;
   }
 
-  savePage(namespace: string, name: string, version: string, pageUid: string, content: string): void {
-    const path = this.pagePath(namespace, name, version, pageUid);
+  savePage(slug: string, version: string, pageUid: string, content: string): void {
+    const path = this.pagePath(slug, version, pageUid);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content);
   }
 
-  readPage(namespace: string, name: string, version: string, pageUid: string): string | null {
-    const path = this.pagePath(namespace, name, version, pageUid);
+  readPage(slug: string, version: string, pageUid: string): string | null {
+    const path = this.pagePath(slug, version, pageUid);
     if (!existsSync(path)) return null;
     return readFileSync(path, "utf-8");
   }
 
-  hasManifest(namespace: string, name: string, version: string): boolean {
-    return existsSync(join(this.docsDir(namespace, name, version), "manifest.json"));
+  hasManifest(slug: string, version: string): boolean {
+    return existsSync(join(this.docsDir(slug, version), "manifest.json"));
   }
 
-  countPages(namespace: string, name: string, version: string): number {
-    const pageIndex = this.loadPageIndex(namespace, name, version);
+  countPages(slug: string, version: string): number {
+    const pageIndex = this.loadPageIndex(slug, version);
     if (pageIndex.length > 0) return pageIndex.length;
 
-    const dir = this.pagesDir(namespace, name, version);
+    const dir = this.pagesDir(slug, version);
     if (!existsSync(dir)) return 0;
     return this.collectMarkdownFiles(dir).length;
   }
 
-  listPageUids(namespace: string, name: string, version: string): string[] {
-    const pageIndex = this.loadPageIndex(namespace, name, version);
+  listPageUids(slug: string, version: string): string[] {
+    const pageIndex = this.loadPageIndex(slug, version);
     if (pageIndex.length > 0) return pageIndex.map(page => page.page_uid);
 
-    const dir = this.pagesDir(namespace, name, version);
+    const dir = this.pagesDir(slug, version);
     if (!existsSync(dir)) return [];
     return this.collectMarkdownFiles(dir).map(file => file.replace(/\.md$/, ""));
   }
 
-  removeVersion(namespace: string, name: string, version: string): void {
-    const dir = this.docsDir(namespace, name, version);
+  removeVersion(slug: string, version: string): void {
+    const dir = this.docsDir(slug, version);
     if (existsSync(dir)) {
       rmSync(dir, { recursive: true, force: true });
     }
   }
 
-  createTempInstallDir(namespace: string, name: string, version: string): string {
-    const prefix = `${namespace}-${name}-${version}-`.replace(/[^a-zA-Z0-9._-]/g, "-");
+  createTempInstallDir(slug: string, version: string): string {
+    const prefix = `${slug}-${version}-`.replace(/[^a-zA-Z0-9._-]/g, "-");
     return mkdtempSync(join(this.cacheDir, "tmp", prefix));
   }
 
-  createTempArchivePath(namespace: string, name: string, version: string, filename = "bundle.tar.gz"): string {
-    const dir = this.createTempInstallDir(namespace, name, version);
+  createTempArchivePath(slug: string, version: string, filename = "bundle.tar.gz"): string {
+    const dir = this.createTempInstallDir(slug, version);
     return join(dir, filename);
   }
 
-  commitStagedVersion(namespace: string, name: string, version: string, stagedDocsDir: string): void {
-    const finalDir = this.docsDir(namespace, name, version);
-    const parentDir = join(this.cacheDir, "docs", namespace, name);
+  commitStagedVersion(slug: string, version: string, stagedDocsDir: string): void {
+    const finalDir = this.docsDir(slug, version);
+    const parentDir = join(this.cacheDir, "docs", slug);
     mkdirSync(parentDir, { recursive: true });
 
     if (existsSync(finalDir)) {
@@ -150,19 +149,19 @@ export class LocalCache {
     renameSync(stagedDocsDir, finalDir);
   }
 
-  backupVersion(namespace: string, name: string, version: string): string | null {
-    const finalDir = this.docsDir(namespace, name, version);
+  backupVersion(slug: string, version: string): string | null {
+    const finalDir = this.docsDir(slug, version);
     if (!existsSync(finalDir)) return null;
 
-    const backupRoot = this.createTempInstallDir(namespace, name, version);
+    const backupRoot = this.createTempInstallDir(slug, version);
     const backupDir = join(backupRoot, "docs");
     renameSync(finalDir, backupDir);
     return backupDir;
   }
 
-  restoreVersionFromBackup(namespace: string, name: string, version: string, backupDir: string): void {
-    const finalDir = this.docsDir(namespace, name, version);
-    const parentDir = join(this.cacheDir, "docs", namespace, name);
+  restoreVersionFromBackup(slug: string, version: string, backupDir: string): void {
+    const finalDir = this.docsDir(slug, version);
+    const parentDir = join(this.cacheDir, "docs", slug);
 
     if (existsSync(finalDir)) {
       rmSync(finalDir, { recursive: true, force: true });
@@ -200,25 +199,25 @@ export class LocalCache {
     writeFileSync(this.statePath(), JSON.stringify(state, null, 2));
   }
 
-  findInstalled(namespace: string, name: string, version?: string): InstalledLibrary | undefined {
+  findInstalled(slug: string, version?: string): InstalledLibrary | undefined {
     return this.loadState().libraries.find(
-      lib => lib.namespace === namespace && lib.name === name && (!version || lib.version === version),
+      lib => lib.slug === slug && (!version || lib.version === version),
     );
   }
 
   addInstalled(lib: InstalledLibrary): void {
     const state = this.loadState();
     state.libraries = state.libraries.filter(
-      existing => !(existing.namespace === lib.namespace && existing.name === lib.name && existing.version === lib.version),
+      existing => !(existing.slug === lib.slug && existing.version === lib.version),
     );
     state.libraries.push(lib);
     this.saveState(state);
   }
 
-  removeInstalled(namespace: string, name: string, version: string): void {
+  removeInstalled(slug: string, version: string): void {
     const state = this.loadState();
     state.libraries = state.libraries.filter(
-      lib => !(lib.namespace === namespace && lib.name === name && lib.version === version),
+      lib => !(lib.slug === slug && lib.version === version),
     );
     this.saveState(state);
   }
@@ -227,8 +226,8 @@ export class LocalCache {
     return this.loadState().libraries;
   }
 
-  private pagePath(namespace: string, name: string, version: string, pageUid: string): string {
-    return join(this.pagesDir(namespace, name, version), `${normalizePageUid(pageUid)}.md`);
+  private pagePath(slug: string, version: string, pageUid: string): string {
+    return join(this.pagesDir(slug, version), `${normalizePageUid(pageUid)}.md`);
   }
 
   private collectMarkdownFiles(path: string, relativeDir = ""): string[] {

@@ -28,41 +28,78 @@ type VersionFixture = {
 };
 
 type RegistryFixture = {
-  currentVersion: string;
-  versions: Record<string, VersionFixture>;
+  packages: Record<string, {
+    slug: string;
+    display_name: string;
+    aliases: string[];
+    homepage_url: string;
+    currentVersion: string;
+    versions: Record<string, VersionFixture>;
+  }>;
 };
 
 function buildFixture(): RegistryFixture {
   return {
-    currentVersion: "3.17.0",
-    versions: {
-      "3.17.0": {
-        version: "3.17.0",
-        channel: "stable",
-        manifest_checksum: "sha256:manifest-317",
-        pages: [
-          {
-            page_uid: "forms",
-            path: "guides/forms.md",
-            title: "Forms",
-            url: "https://example.test/guides/forms",
-            content_md: "# Forms\n\nFile uploads are supported.\n\nUse FormData for uploads.\n",
+    packages: {
+      "inertia-rails": {
+        slug: "inertia-rails",
+        display_name: "Inertia Rails",
+        aliases: ["inertia-rails", "inertiarails"],
+        homepage_url: "https://github.com/inertiajs/inertia-rails",
+        currentVersion: "3.18.0",
+        versions: {
+          "3.17.0": {
+            version: "3.17.0",
+            channel: "stable",
+            manifest_checksum: "sha256:manifest-317",
+            pages: [
+              {
+                page_uid: "forms",
+                path: "guides/forms.md",
+                title: "Forms",
+                url: "https://example.test/guides/forms",
+                content_md: "# Forms\n\nFile uploads are supported.\n\nUse FormData for uploads.\n",
+              },
+            ],
           },
-        ],
+          "3.18.0": {
+            version: "3.18.0",
+            channel: "stable",
+            manifest_checksum: "sha256:manifest-318",
+            pages: [
+              {
+                page_uid: "forms",
+                path: "guides/forms.md",
+                title: "Forms",
+                url: "https://example.test/guides/forms",
+                content_md: "# Forms\n\nFile uploads changed.\n\nUse the upload helper.\n",
+              },
+            ],
+          },
+        },
       },
-      "3.18.0": {
-        version: "3.18.0",
-        channel: "stable",
-        manifest_checksum: "sha256:manifest-318",
-        pages: [
-          {
-            page_uid: "forms",
-            path: "guides/forms.md",
-            title: "Forms",
-            url: "https://example.test/guides/forms",
-            content_md: "# Forms\n\nFile uploads changed.\n\nUse the upload helper.\n",
+      laravel: {
+        slug: "laravel",
+        display_name: "Laravel",
+        aliases: ["laravel"],
+        homepage_url: "https://laravel.com/docs",
+        currentVersion: "12.x",
+        versions: {
+          "12.x": {
+            version: "12.x",
+            channel: "stable",
+            manifest_checksum: "sha256:manifest-laravel-12x",
+            pages: [
+              {
+                page_uid: "auth",
+                path: "authentication.md",
+                title: "Authentication",
+                url: "https://laravel.com/docs/12.x/authentication",
+                content_md: "# Authentication\n\nLaravel ships with guards and providers.\n",
+              },
+            ],
           },
-        ],
+        },
       },
     },
   };
@@ -99,23 +136,22 @@ function pageIndexFor(version: VersionFixture) {
   }));
 }
 
-function manifestFor(version: VersionFixture) {
+function manifestFor(pkg: RegistryFixture["packages"][string], version: VersionFixture) {
   return {
     schema_version: "1.0",
-    namespace: "inertiajs",
-    name: "inertia-rails",
-    display_name: "Inertia Rails",
+    slug: pkg.slug,
+    display_name: pkg.display_name,
     version: version.version,
     channel: version.channel,
     generated_at: "2026-03-13T00:00:00Z",
     doc_count: version.pages.length,
     source: {
       type: "github",
-      url: "https://github.com/inertiajs/inertia-rails",
+      url: pkg.homepage_url,
       etag: null,
     },
     page_index: {
-      url: `/api/v1/libraries/inertiajs/inertia-rails/versions/${version.version}/page-index`,
+      url: `/api/v1/libraries/${pkg.slug}/versions/${version.version}/page-index`,
       sha256: null,
     },
     profiles: {},
@@ -138,33 +174,43 @@ async function startFakeRegistry(fixture: RegistryFixture): Promise<{
   baseUrl: string;
   close: () => Promise<void>;
 }> {
+  function packageMatchesQuery(pkg: RegistryFixture["packages"][string], query: string): boolean {
+    const haystacks = [pkg.slug, pkg.display_name, ...pkg.aliases].map(value => value.toLowerCase());
+    return haystacks.some(value => value.includes(query));
+  }
+
+  function findPackageByQuery(query: string) {
+    const normalized = query.trim().toLowerCase();
+    return Object.values(fixture.packages).find(pkg => packageMatchesQuery(pkg, normalized));
+  }
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const method = req.method ?? "GET";
 
     if (method === "GET" && url.pathname === "/api/v1/libraries") {
       const query = (url.searchParams.get("query") ?? "").toLowerCase();
-      const matches = query.includes("inertia")
-        ? [
-          {
-            namespace: "inertiajs",
-            name: "inertia-rails",
-            display_name: "Inertia Rails",
-            aliases: ["inertia-rails", "inertiarails"],
-            homepage_url: "https://github.com/inertiajs/inertia-rails",
-            default_version: "3.18.0",
-            source_type: "github",
-            license_status: "verified",
-            version_count: Object.keys(fixture.versions).length,
-          },
-        ]
-        : [];
+      const matches = Object.values(fixture.packages)
+        .filter(pkg => packageMatchesQuery(pkg, query))
+        .map(pkg => ({
+          slug: pkg.slug,
+          display_name: pkg.display_name,
+          aliases: pkg.aliases,
+          homepage_url: pkg.homepage_url,
+          default_version: pkg.currentVersion,
+          source_type: "github",
+          license_status: "verified",
+          version_count: Object.keys(pkg.versions).length,
+        }));
       return jsonResponse(res, { data: matches, meta: { cursor: null } });
     }
 
-    if (method === "GET" && url.pathname === "/api/v1/libraries/inertiajs/inertia-rails/versions") {
+    const versionsMatch = url.pathname.match(/^\/api\/v1\/libraries\/([^/]+)\/versions$/);
+    if (method === "GET" && versionsMatch) {
+      const pkg = fixture.packages[versionsMatch[1]];
+      if (!pkg) return notFound(res);
       return jsonResponse(res, {
-        data: Object.values(fixture.versions).map(version => ({
+        data: Object.values(pkg.versions).map(version => ({
           version: version.version,
           channel: version.channel,
           generated_at: "2026-03-13T00:00:00Z",
@@ -175,20 +221,21 @@ async function startFakeRegistry(fixture: RegistryFixture): Promise<{
     }
 
     if (method === "POST" && url.pathname === "/api/v1/resolve") {
-      const body = await readJson(req) as { version_hint?: string };
-      const versionKey = body.version_hint && fixture.versions[body.version_hint]
+      const body = await readJson(req) as { query: string; version_hint?: string };
+      const pkg = findPackageByQuery(body.query);
+      if (!pkg) return notFound(res);
+      const versionKey = body.version_hint && pkg.versions[body.version_hint]
         ? body.version_hint
-        : fixture.currentVersion;
-      const version = fixture.versions[versionKey];
+        : pkg.currentVersion;
+      const version = pkg.versions[versionKey];
       return jsonResponse(res, {
         data: {
           library: {
-            namespace: "inertiajs",
-            name: "inertia-rails",
-            display_name: "Inertia Rails",
-            aliases: ["inertia-rails", "inertiarails"],
-            homepage_url: "https://github.com/inertiajs/inertia-rails",
-            default_version: "3.18.0",
+            slug: pkg.slug,
+            display_name: pkg.display_name,
+            aliases: pkg.aliases,
+            homepage_url: pkg.homepage_url,
+            default_version: pkg.currentVersion,
             source_type: "github",
             license_status: "verified",
           },
@@ -203,22 +250,25 @@ async function startFakeRegistry(fixture: RegistryFixture): Promise<{
       });
     }
 
-    const manifestMatch = url.pathname.match(/^\/api\/v1\/libraries\/inertiajs\/inertia-rails\/versions\/([^/]+)\/manifest$/);
+    const manifestMatch = url.pathname.match(/^\/api\/v1\/libraries\/([^/]+)\/versions\/([^/]+)\/manifest$/);
     if (method === "GET" && manifestMatch) {
-      const version = fixture.versions[manifestMatch[1]];
-      return version ? jsonResponse(res, { data: manifestFor(version), meta: { cursor: null } }) : notFound(res);
+      const pkg = fixture.packages[manifestMatch[1]];
+      const version = pkg?.versions[manifestMatch[2]];
+      return pkg && version ? jsonResponse(res, { data: manifestFor(pkg, version), meta: { cursor: null } }) : notFound(res);
     }
 
-    const pageIndexMatch = url.pathname.match(/^\/api\/v1\/libraries\/inertiajs\/inertia-rails\/versions\/([^/]+)\/page-index$/);
+    const pageIndexMatch = url.pathname.match(/^\/api\/v1\/libraries\/([^/]+)\/versions\/([^/]+)\/page-index$/);
     if (method === "GET" && pageIndexMatch) {
-      const version = fixture.versions[pageIndexMatch[1]];
+      const pkg = fixture.packages[pageIndexMatch[1]];
+      const version = pkg?.versions[pageIndexMatch[2]];
       return version ? jsonResponse(res, { data: pageIndexFor(version), meta: { cursor: null } }) : notFound(res);
     }
 
-    const pageMatch = url.pathname.match(/^\/api\/v1\/libraries\/inertiajs\/inertia-rails\/versions\/([^/]+)\/pages\/([^/]+)$/);
+    const pageMatch = url.pathname.match(/^\/api\/v1\/libraries\/([^/]+)\/versions\/([^/]+)\/pages\/([^/]+)$/);
     if (method === "GET" && pageMatch) {
-      const version = fixture.versions[pageMatch[1]];
-      const page = version?.pages.find(candidate => candidate.page_uid === pageMatch[2]);
+      const pkg = fixture.packages[pageMatch[1]];
+      const version = pkg?.versions[pageMatch[2]];
+      const page = version?.pages.find(candidate => candidate.page_uid === pageMatch[3]);
       return page
         ? jsonResponse(res, {
             data: {
@@ -315,13 +365,51 @@ describe("contextqmd CLI", () => {
       query: "inertia rails",
       results: [
         {
-          library: "inertiajs/inertia-rails",
+          library: "inertia-rails",
           default_version: "3.18.0",
           versions: ["3.17.0", "3.18.0"],
         },
       ],
     });
     expect(result.stderr).toBe("");
+  });
+
+  it("installs multiple libraries sequentially", async () => {
+    const fixture = buildFixture();
+    const registry = await startFakeRegistry(fixture);
+    cleanups.push(registry.close);
+
+    const install = await invoke(
+      [
+        "--registry", registry.baseUrl,
+        "--cache-dir", cacheDir,
+        "--json",
+        "libraries", "install", "inertia-rails", "laravel",
+      ],
+      process.env,
+    );
+
+    expect(install.exitCode).toBe(0);
+    expect(JSON.parse(install.stdout)).toMatchObject({
+      results: [
+        { input: "inertia-rails", library: "inertia-rails", changed: true },
+        { input: "laravel", library: "laravel", changed: true },
+      ],
+      success_count: 2,
+      error_count: 0,
+    });
+    expect(install.stderr).toContain("Resolving inertia-rails");
+    expect(install.stderr).toContain("Resolving laravel");
+  });
+
+  it("rejects --version when installing multiple libraries", async () => {
+    const result = await invoke(
+      ["libraries", "install", "inertia-rails", "laravel", "--version", "3.17.0"],
+      process.env,
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--version can only be used when installing a single library.");
   });
 
   it("installs docs directly from the page API and supports local docs search/get", async () => {
@@ -342,7 +430,7 @@ describe("contextqmd CLI", () => {
 
     expect(install.exitCode).toBe(0);
     expect(JSON.parse(install.stdout)).toMatchObject({
-      library: "inertiajs/inertia-rails",
+      library: "inertia-rails",
       version: "3.17.0",
       changed: true,
       install_method: "page_fallback",
@@ -357,7 +445,7 @@ describe("contextqmd CLI", () => {
         "--cache-dir", cacheDir,
         "--json",
         "docs", "search", "file uploads",
-        "--library", "inertiajs/inertia-rails",
+        "--library", "inertia-rails",
         "--version", "3.17.0",
         "--mode", "fts",
       ],
@@ -380,7 +468,7 @@ describe("contextqmd CLI", () => {
         "--registry", registry.baseUrl,
         "--cache-dir", cacheDir,
         "docs", "get",
-        "--library", "inertiajs/inertia-rails",
+        "--library", "inertia-rails",
         "--version", "3.17.0",
         "--doc-path", "guides/forms.md",
         "--from-line", "1",
@@ -403,20 +491,20 @@ describe("contextqmd CLI", () => {
       [
         "--registry", registry.baseUrl,
         "--cache-dir", cacheDir,
-        "libraries", "install", "inertiajs/inertia-rails",
+        "libraries", "install", "inertia-rails",
         "--version", "3.17.0",
       ],
       process.env,
     );
 
-    fixture.currentVersion = "3.18.0";
+    fixture.packages["inertia-rails"].currentVersion = "3.18.0";
 
     const update = await invoke(
       [
         "--registry", registry.baseUrl,
         "--cache-dir", cacheDir,
         "--json",
-        "libraries", "update", "inertiajs/inertia-rails",
+        "libraries", "update", "inertia-rails",
       ],
       process.env,
     );
@@ -425,7 +513,7 @@ describe("contextqmd CLI", () => {
     expect(JSON.parse(update.stdout)).toMatchObject({
       results: [
         {
-          library: "inertiajs/inertia-rails",
+          library: "inertia-rails",
           previous_version: "3.17.0",
           version: "3.18.0",
           status: "updated",
@@ -438,7 +526,7 @@ describe("contextqmd CLI", () => {
         "--registry", registry.baseUrl,
         "--cache-dir", cacheDir,
         "--json",
-        "libraries", "remove", "inertiajs/inertia-rails",
+        "libraries", "remove", "inertia-rails",
         "--version", "3.18.0",
       ],
       process.env,
@@ -446,7 +534,7 @@ describe("contextqmd CLI", () => {
 
     expect(remove.exitCode).toBe(0);
     expect(JSON.parse(remove.stdout)).toEqual({
-      library: "inertiajs/inertia-rails",
+      library: "inertia-rails",
       removed_versions: ["3.18.0"],
     });
 

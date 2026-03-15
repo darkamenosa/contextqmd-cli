@@ -35,30 +35,29 @@ export class RegistryClient {
     return this.get(`libraries?${params}`);
   }
 
-  async getLibrary(namespace: string, name: string): Promise<ApiResponse<Library>> {
-    return this.get(`libraries/${namespace}/${name}`);
+  async getLibrary(slug: string): Promise<ApiResponse<Library>> {
+    return this.get(`libraries/${slug}`);
   }
 
-  async getVersions(namespace: string, name: string, cursor?: string): Promise<ApiResponse<Version[]>> {
+  async getVersions(slug: string, cursor?: string): Promise<ApiResponse<Version[]>> {
     const params = cursor ? `?cursor=${cursor}` : "";
-    return this.get(`libraries/${namespace}/${name}/versions${params}`);
+    return this.get(`libraries/${slug}/versions${params}`);
   }
 
-  async getManifest(namespace: string, name: string, version: string): Promise<ApiResponse<Manifest>> {
-    return this.get(`libraries/${namespace}/${name}/versions/${version}/manifest`);
+  async getManifest(slug: string, version: string): Promise<ApiResponse<Manifest>> {
+    return this.get(`libraries/${slug}/versions/${version}/manifest`);
   }
 
   async getPageIndex(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
     cursor?: string,
   ): Promise<ApiResponse<PageRecord[]>> {
     const params = cursor ? `?cursor=${cursor}` : "";
-    return this.get(`libraries/${namespace}/${name}/versions/${version}/page-index${params}`);
+    return this.get(`libraries/${slug}/versions/${version}/page-index${params}`);
   }
 
-  async getAllPageIndex(namespace: string, name: string, version: string): Promise<PageRecord[]> {
+  async getAllPageIndex(slug: string, version: string): Promise<PageRecord[]> {
     const maxFetches = 100;
     const allPages: PageRecord[] = [];
     let cursor: string | undefined;
@@ -68,7 +67,7 @@ export class RegistryClient {
       if (++iterations > maxFetches) {
         break;
       }
-      const response = await this.getPageIndex(namespace, name, version, cursor);
+      const response = await this.getPageIndex(slug, version, cursor);
       allPages.push(...response.data);
       cursor = response.meta.cursor ?? undefined;
     } while (cursor);
@@ -77,12 +76,11 @@ export class RegistryClient {
   }
 
   async getPageContent(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
     pageUid: string,
   ): Promise<ApiResponse<{ page_uid: string; path: string; title: string; url: string; content_md: string }>> {
-    return this.get(`libraries/${namespace}/${name}/versions/${version}/pages/${pageUid}`);
+    return this.get(`libraries/${slug}/versions/${version}/pages/${pageUid}`);
   }
 
   async resolve(request: ResolveRequest): Promise<ApiResponse<ResolveResponse>> {

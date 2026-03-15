@@ -103,6 +103,59 @@ function addGlobalOptions(command: Command): Command {
     .option("--cache-dir <path>", "Local cache directory override");
 }
 
+function invalidArgumentsResult(message: string): CommandResult {
+  return {
+    text: message,
+    isError: true,
+    structuredContent: {
+      error: {
+        code: "INVALID_ARGUMENTS",
+        message,
+      },
+    },
+  };
+}
+
+async function installLibraries(
+  deps: AppDeps,
+  libraries: string[],
+  version?: string,
+): Promise<CommandResult> {
+  if (version && libraries.length > 1) {
+    return invalidArgumentsResult("--version can only be used when installing a single library.");
+  }
+
+  if (libraries.length === 1) {
+    return installDocs(deps, { library: libraries[0], version });
+  }
+
+  const results: Array<Record<string, unknown>> = [];
+  const output: string[] = [];
+  let hasError = false;
+
+  for (const library of libraries) {
+    const result = await installDocs(deps, { library, version });
+    output.push(result.text);
+    results.push({
+      input: library,
+      ...(result.structuredContent ?? {}),
+    });
+    hasError = hasError || Boolean(result.isError);
+  }
+
+  const errorCount = results.filter(result => "error" in result).length;
+
+  return {
+    text: output.join("\n\n"),
+    isError: hasError,
+    structuredContent: {
+      results,
+      success_count: results.length - errorCount,
+      error_count: errorCount,
+    },
+  };
+}
+
 function globalOptionsFor(command: Command): GlobalOptions {
   return command.optsWithGlobals<GlobalOptions>();
 }
@@ -133,11 +186,11 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   libraries
     .command("install")
-    .argument("<library>", "Library query or slug")
+    .argument("<libraries...>", "Library queries or slugs")
     .option("--version <version>", "Version to install")
-    .action(async function(library: string, options: { version?: string }) {
+    .action(async function(libraries: string[], options: { version?: string }) {
       const global = globalOptionsFor(this);
-      const result = await withDeps(io.env, global, io, deps => installDocs(deps, { library, version: options.version }));
+      const result = await withDeps(io.env, global, io, deps => installLibraries(deps, libraries, options.version));
       onExitCode(renderResult(result, global, io));
     });
 
@@ -151,7 +204,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   libraries
     .command("update")
-    .argument("[library]", "Optional library slug (namespace/name)")
+    .argument("[library]", "Optional library slug")
     .action(async function(library?: string) {
       const global = globalOptionsFor(this);
       const result = await withDeps(io.env, global, io, deps => updateDocs(deps, library ? { library } : {}));
@@ -160,7 +213,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   libraries
     .command("remove")
-    .argument("<library>", "Library slug (namespace/name)")
+    .argument("<library>", "Library slug")
     .option("--version <version>", "Installed version to remove")
     .action(async function(library: string, options: { version?: string }) {
       const global = globalOptionsFor(this);
@@ -194,7 +247,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   docs
     .command("get")
-    .requiredOption("--library <library>", "Library slug (namespace/name)")
+    .requiredOption("--library <library>", "Library slug")
     .requiredOption("--version <version>", "Installed version")
     .option("--doc-path <docPath>", "Canonical document path")
     .option("--page-uid <pageUid>", "Page UID fallback")

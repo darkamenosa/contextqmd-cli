@@ -72,8 +72,6 @@ type InstallMethod = "bundle" | "page_fallback";
 type SearchLibraryCandidate = {
   library: string;
   display_name: string;
-  namespace: string;
-  name: string;
   aliases: string[];
   homepage_url: string;
   default_version: string;
@@ -121,13 +119,11 @@ function errorResult(text: string, code: string, details: Record<string, unknown
   };
 }
 
-function parseLibrary(library: string): { namespace: string; name: string } | null {
-  const [namespace, name] = library.split("/");
-  return namespace && name ? { namespace, name } : null;
-}
+const LIBRARY_SLUG_PATTERN = /^[a-z0-9-]+$/;
 
-function librarySlug(namespace: string, name: string): string {
-  return `${namespace}/${name}`;
+function normalizeLibrarySlug(library: string): string | null {
+  const normalized = library.trim();
+  return LIBRARY_SLUG_PATTERN.test(normalized) ? normalized : null;
 }
 
 function normalizeSha256(value: string | null | undefined): string | null {
@@ -148,10 +144,10 @@ function shouldReportPageProgress(completed: number, total: number): boolean {
   return total <= 10 || completed === 1 || completed === total || completed % 10 === 0;
 }
 
-function installedVersions(cache: LocalCache, namespace: string, name: string): string[] {
+function installedVersions(cache: LocalCache, slug: string): string[] {
   return cache
     .listInstalled()
-    .filter(lib => lib.namespace === namespace && lib.name === name)
+    .filter(lib => lib.slug === slug)
     .map(lib => lib.version)
     .sort();
 }
@@ -181,14 +177,13 @@ function selectBundle(manifest: Manifest): { profile: "full" | "slim"; bundle: M
 }
 
 function bundleArchiveFilename(
-  namespace: string,
-  name: string,
+  slug: string,
   version: string,
   profile: "full" | "slim",
   bundle: ManifestBundle,
 ): string {
   const suffix = bundle.url.endsWith(".tgz") ? ".tgz" : ".tar.gz";
-  return `${namespace}-${name}-${version}-${profile}${suffix}`;
+  return `${slug}-${version}-${profile}${suffix}`;
 }
 
 type BundleArchiveEntry = {
@@ -394,28 +389,24 @@ async function ensureCurrentIndexSchema(
   version?: string,
 ): Promise<void> {
   const installed = cache.listInstalled().filter(lib => {
-    const matchesLibrary = !library || `${lib.namespace}/${lib.name}` === library;
+    const matchesLibrary = !library || lib.slug === library;
     const matchesVersion = !version || lib.version === version;
     return matchesLibrary && matchesVersion;
   });
 
   for (const lib of installed) {
     if ((lib.index_schema_version ?? 0) >= DOC_INDEX_SCHEMA_VERSION) continue;
-    await indexer.removeLibraryVersion(lib.namespace, lib.name, lib.version);
-    await indexer.indexLibraryVersion(lib.namespace, lib.name, lib.version);
+    await indexer.removeLibraryVersion(lib.slug, lib.version);
+    await indexer.indexLibraryVersion(lib.slug, lib.version);
     cache.addInstalled({
       ...lib,
-      page_count: cache.countPages(lib.namespace, lib.name, lib.version),
+      page_count: cache.countPages(lib.slug, lib.version),
       index_schema_version: DOC_INDEX_SCHEMA_VERSION,
     });
   }
 }
 
 function resolveCachedPage(cache: LocalCache, input: GetDocInput): ResolvedCachedPage | null {
-  const parsed = parseLibrary(input.library);
-  if (!parsed) return null;
-
-  const { namespace, name } = parsed;
   const hasDocPath = typeof input.doc_path === "string";
   const hasPageUid = typeof input.page_uid === "string";
 
@@ -424,9 +415,9 @@ function resolveCachedPage(cache: LocalCache, input: GetDocInput): ResolvedCache
   }
 
   if (hasDocPath) {
-    const page = cache.findPageByPath(namespace, name, input.version, input.doc_path!);
+    const page = cache.findPageByPath(input.library, input.version, input.doc_path!);
     if (!page) return null;
-    const content = cache.readPage(namespace, name, input.version, page.page_uid);
+    const content = cache.readPage(input.library, input.version, page.page_uid);
     return {
       library: input.library,
       version: input.version,
@@ -440,8 +431,8 @@ function resolveCachedPage(cache: LocalCache, input: GetDocInput): ResolvedCache
   }
 
   const pageUid = input.page_uid!;
-  const page = cache.findPageByUid(namespace, name, input.version, pageUid);
-  const content = cache.readPage(namespace, name, input.version, pageUid);
+  const page = cache.findPageByUid(input.library, input.version, pageUid);
+  const content = cache.readPage(input.library, input.version, pageUid);
   if (!page && content === null) return null;
 
   return {
@@ -524,17 +515,16 @@ function resolveExcerptWindow(input: GetDocInput): { fromLine?: number; maxLines
 
 async function installFromPageApi(
   deps: AppDeps,
-  namespace: string,
-  name: string,
+  slug: string,
   version: string,
   manifest: Manifest,
 ): Promise<Omit<InstallOutcome, "indexedCount" | "manifestChecksum">> {
   const { cache, registryClient } = deps;
 
-  cache.saveManifest(namespace, name, version, manifest);
-  reportProgress(deps, `Fetching page index for ${librarySlug(namespace, name)}@${version}...`);
-  const allPages = await registryClient.getAllPageIndex(namespace, name, version);
-  cache.savePageIndex(namespace, name, version, allPages);
+  cache.saveManifest(slug, version, manifest);
+  reportProgress(deps, `Fetching page index for ${slug}@${version}...`);
+  const allPages = await registryClient.getAllPageIndex(slug, version);
+  cache.savePageIndex(slug, version, allPages);
 
   let downloadedCount = 0;
   for (const page of allPages) {
@@ -542,8 +532,8 @@ async function installFromPageApi(
     if (shouldReportPageProgress(nextCount, allPages.length)) {
       reportProgress(deps, `Downloading page content ${nextCount}/${allPages.length}...`);
     }
-    const pageContent = await registryClient.getPageContent(namespace, name, version, page.page_uid);
-    cache.savePage(namespace, name, version, page.page_uid, pageContent.data.content_md);
+    const pageContent = await registryClient.getPageContent(slug, version, page.page_uid);
+    cache.savePage(slug, version, page.page_uid, pageContent.data.content_md);
     downloadedCount++;
   }
 
@@ -557,18 +547,16 @@ async function installFromPageApi(
 
 async function installFromBundle(
   deps: AppDeps,
-  namespace: string,
-  name: string,
+  slug: string,
   version: string,
   manifest: Manifest,
   selectedBundle: { profile: "full" | "slim"; bundle: ManifestBundle },
 ): Promise<Omit<InstallOutcome, "indexedCount" | "manifestChecksum" | "bundleFallbackReason">> {
   const { cache, registryClient } = deps;
   const archivePath = cache.createTempArchivePath(
-    namespace,
-    name,
+    slug,
     version,
-    bundleArchiveFilename(namespace, name, version, selectedBundle.profile, selectedBundle.bundle),
+    bundleArchiveFilename(slug, version, selectedBundle.profile, selectedBundle.bundle),
   );
   const archiveDir = dirname(archivePath);
   const extractionRoot = join(archiveDir, "extracted");
@@ -577,7 +565,7 @@ async function installFromBundle(
     const expectedSha = normalizeSha256(selectedBundle.bundle.sha256);
     reportProgress(
       deps,
-      `Downloading ${selectedBundle.profile} bundle for ${librarySlug(namespace, name)}@${version}...`,
+      `Downloading ${selectedBundle.profile} bundle for ${slug}@${version}...`,
     );
     let bundleBytes = await registryClient.downloadBundle(selectedBundle.bundle.url);
     let actualSha = sha256Hex(bundleBytes);
@@ -586,20 +574,20 @@ async function installFromBundle(
       bundleBytes = await registryClient.downloadBundle(selectedBundle.bundle.url);
       actualSha = sha256Hex(bundleBytes);
       if (actualSha !== expectedSha) {
-        throw new Error(`Bundle checksum mismatch for ${namespace}/${name}@${version}`);
+        throw new Error(`Bundle checksum mismatch for ${slug}@${version}`);
       }
     }
 
     writeFileSync(archivePath, bundleBytes);
     mkdirSync(extractionRoot, { recursive: true });
-    reportProgress(deps, `Extracting bundle for ${librarySlug(namespace, name)}@${version}...`);
+    reportProgress(deps, `Extracting bundle for ${slug}@${version}...`);
     extractBundleArchive(archivePath, extractionRoot);
 
     const stagedDocsDir = resolveExtractedDocsDir(extractionRoot);
-    reportProgress(deps, `Validating bundle contents for ${librarySlug(namespace, name)}@${version}...`);
+    reportProgress(deps, `Validating bundle contents for ${slug}@${version}...`);
     const { pageCount } = validateExtractedBundle(stagedDocsDir);
     writeFileSync(join(stagedDocsDir, "manifest.json"), JSON.stringify(manifest, null, 2));
-    cache.commitStagedVersion(namespace, name, version, stagedDocsDir);
+    cache.commitStagedVersion(slug, version, stagedDocsDir);
 
     return {
       installMethod: "bundle",
@@ -615,16 +603,15 @@ async function installFromBundle(
 
 async function installResolvedVersion(
   deps: AppDeps,
-  namespace: string,
-  name: string,
+  slug: string,
   version: string,
   manifest?: Manifest,
 ): Promise<InstallOutcome> {
   const { cache, indexer } = deps;
-  const resolvedManifest = manifest ?? (await deps.registryClient.getManifest(namespace, name, version)).data;
+  const resolvedManifest = manifest ?? (await deps.registryClient.getManifest(slug, version)).data;
   const manifestChecksum = resolvedManifest.provenance?.manifest_checksum ?? null;
-  const existingInstall = cache.findInstalled(namespace, name, version);
-  const backupDir = existingInstall ? cache.backupVersion(namespace, name, version) : null;
+  const existingInstall = cache.findInstalled(slug, version);
+  const backupDir = existingInstall ? cache.backupVersion(slug, version) : null;
 
   try {
     let install: Omit<InstallOutcome, "indexedCount" | "manifestChecksum">;
@@ -633,21 +620,21 @@ async function installResolvedVersion(
 
     if (selectedBundle) {
       try {
-        install = await installFromBundle(deps, namespace, name, version, resolvedManifest, selectedBundle);
+        install = await installFromBundle(deps, slug, version, resolvedManifest, selectedBundle);
       } catch (error) {
         bundleFallbackReason = (error as Error).message;
         reportProgress(
           deps,
-          `Bundle install failed for ${librarySlug(namespace, name)}@${version}; falling back to page API...`,
+          `Bundle install failed for ${slug}@${version}; falling back to page API...`,
         );
-        install = await installFromPageApi(deps, namespace, name, version, resolvedManifest);
+        install = await installFromPageApi(deps, slug, version, resolvedManifest);
       }
     } else {
-      install = await installFromPageApi(deps, namespace, name, version, resolvedManifest);
+      install = await installFromPageApi(deps, slug, version, resolvedManifest);
     }
 
     reportProgress(deps, `Indexing ${install.pageCount} pages for local search...`);
-    const indexedCount = await indexer.indexLibraryVersion(namespace, name, version);
+    const indexedCount = await indexer.indexLibraryVersion(slug, version);
     if (backupDir) {
       cache.discardBackup(backupDir);
     }
@@ -659,19 +646,19 @@ async function installResolvedVersion(
       ...(bundleFallbackReason ? { bundleFallbackReason } : {}),
     };
   } catch (error) {
-    await indexer.removeLibraryVersion(namespace, name, version);
+    await indexer.removeLibraryVersion(slug, version);
     if (backupDir) {
-      cache.restoreVersionFromBackup(namespace, name, version, backupDir);
+      cache.restoreVersionFromBackup(slug, version, backupDir);
     }
 
     if (existingInstall) {
       cache.addInstalled({
         ...existingInstall,
-        page_count: cache.countPages(namespace, name, version),
+        page_count: cache.countPages(slug, version),
         index_schema_version: 0,
       });
     } else {
-      cache.removeVersion(namespace, name, version);
+      cache.removeVersion(slug, version);
     }
     throw error;
   }
@@ -690,7 +677,7 @@ export async function searchLibraries(deps: AppDeps, input: SearchLibrariesInput
   }
 
   const versionResponses = await Promise.allSettled(
-    matches.map(match => deps.registryClient.getVersions(match.namespace, match.name)),
+    matches.map(match => deps.registryClient.getVersions(match.slug)),
   );
 
   const results: SearchLibraryCandidate[] = matches.map((match, index) => {
@@ -698,13 +685,11 @@ export async function searchLibraries(deps: AppDeps, input: SearchLibrariesInput
     const versions = versionResponse?.status === "fulfilled"
       ? versionResponse.value.data.map(version => version.version)
       : (match.default_version ? [match.default_version] : []);
-    const localVersions = installedVersions(deps.cache, match.namespace, match.name);
+    const localVersions = installedVersions(deps.cache, match.slug);
 
     return {
-      library: librarySlug(match.namespace, match.name),
+      library: match.slug,
       display_name: match.display_name,
-      namespace: match.namespace,
-      name: match.name,
       aliases: match.aliases,
       homepage_url: match.homepage_url,
       default_version: match.default_version,
@@ -735,13 +720,12 @@ export async function installDocs(deps: AppDeps, input: InstallDocsInput): Promi
     query: input.library,
     version_hint: input.version,
   });
-  const { namespace, name } = resolved.data.library;
-  const canonicalLibrary = librarySlug(namespace, name);
+  const canonicalLibrary = resolved.data.library.slug;
   const targetVersion = resolved.data.version.version;
   reportProgress(deps, `Fetching manifest for ${canonicalLibrary}@${targetVersion}...`);
-  const manifest = (await deps.registryClient.getManifest(namespace, name, targetVersion)).data;
+  const manifest = (await deps.registryClient.getManifest(canonicalLibrary, targetVersion)).data;
   const targetChecksum = manifest.provenance?.manifest_checksum ?? null;
-  const existing = deps.cache.findInstalled(namespace, name, targetVersion);
+  const existing = deps.cache.findInstalled(canonicalLibrary, targetVersion);
 
   if (existing && existing.manifest_checksum === targetChecksum) {
     return structuredTextResult(
@@ -756,10 +740,9 @@ export async function installDocs(deps: AppDeps, input: InstallDocsInput): Promi
     );
   }
 
-  const outcome = await installResolvedVersion(deps, namespace, name, targetVersion, manifest);
+  const outcome = await installResolvedVersion(deps, canonicalLibrary, targetVersion, manifest);
   deps.cache.addInstalled({
-    namespace,
-    name,
+    slug: canonicalLibrary,
     version: targetVersion,
     profile: outcome.profile,
     installed_at: new Date().toISOString(),
@@ -799,7 +782,7 @@ export function listInstalledDocs(deps: AppDeps): CommandResult {
   }
 
   const results = installed.map(lib => ({
-    library: librarySlug(lib.namespace, lib.name),
+    library: lib.slug,
     version: lib.version,
     profile: lib.profile,
     page_count: lib.page_count,
@@ -813,25 +796,25 @@ export function listInstalledDocs(deps: AppDeps): CommandResult {
 export async function searchDocs(deps: AppDeps, input: SearchDocsInput): Promise<CommandResult> {
   const { cache, indexer } = deps;
   const installed = cache.listInstalled();
+  const library = input.library ? (normalizeLibrarySlug(input.library) ?? undefined) : undefined;
 
-  if (input.library) {
-    const parsed = parseLibrary(input.library);
-    if (!parsed) {
-      return errorResult(
-        "library must be in namespace/name format (for example 'vercel/nextjs').",
-        "INVALID_LIBRARY",
-      );
-    }
+  if (input.library && !library) {
+    return errorResult(
+      "library must be a canonical slug (for example 'nextjs').",
+      "INVALID_LIBRARY",
+    );
+  }
 
-    const matchingVersions = installedVersions(cache, parsed.namespace, parsed.name);
+  if (library) {
+    const matchingVersions = installedVersions(cache, library);
     const requestedInstalled = input.version ? matchingVersions.includes(input.version) : matchingVersions.length > 0;
 
     if (!requestedInstalled) {
       return errorResult(
-        input.version ? `${input.library}@${input.version} is not installed.` : `${input.library} is not installed.`,
+        input.version ? `${library}@${input.version} is not installed.` : `${library} is not installed.`,
         "NOT_INSTALLED",
         {
-          library: input.library,
+          library,
           ...(input.version ? { version: input.version } : {}),
           installed_versions: matchingVersions,
         },
@@ -841,9 +824,9 @@ export async function searchDocs(deps: AppDeps, input: SearchDocsInput): Promise
     return structuredTextResult("No documentation packages installed. Use install_docs first.", { results: [] });
   }
 
-  await ensureCurrentIndexSchema(deps, input.library, input.version);
+  await ensureCurrentIndexSchema(deps, library, input.version);
   const results = await indexer.search(input.query, {
-    library: input.library,
+    library,
     version: input.version,
     maxResults: input.max_results ?? 5,
     mode: input.mode ?? "auto",
@@ -851,7 +834,7 @@ export async function searchDocs(deps: AppDeps, input: SearchDocsInput): Promise
 
   if (results.length === 0) {
     return structuredTextResult(
-      `No results found for "${input.query}"${input.library ? ` in ${input.library}` : ""}.`,
+      `No results found for "${input.query}"${library ? ` in ${library}` : ""}.`,
       { query: input.query, results: [] },
     );
   }
@@ -884,14 +867,14 @@ export async function searchDocs(deps: AppDeps, input: SearchDocsInput): Promise
 }
 
 export async function getDoc(deps: AppDeps, input: GetDocInput): Promise<CommandResult> {
-  const parsed = parseLibrary(input.library);
-  if (!parsed) {
-    return errorResult("Error: library must be in namespace/name format", "INVALID_LIBRARY");
+  const library = normalizeLibrarySlug(input.library);
+  if (!library) {
+    return errorResult("Error: library must be a canonical slug", "INVALID_LIBRARY");
   }
 
-  const installed = deps.cache.findInstalled(parsed.namespace, parsed.name, input.version);
+  const installed = deps.cache.findInstalled(library, input.version);
   if (!installed) {
-    return errorResult(`${input.library}@${input.version} is not installed.`, "NOT_INSTALLED");
+    return errorResult(`${library}@${input.version} is not installed.`, "NOT_INSTALLED");
   }
 
   const lookupCount = (input.doc_path ? 1 : 0) + (input.page_uid ? 1 : 0);
@@ -899,10 +882,10 @@ export async function getDoc(deps: AppDeps, input: GetDocInput): Promise<Command
     return errorResult("Exactly one of doc_path or page_uid must be provided.", "INVALID_LOOKUP");
   }
 
-  const page = resolveCachedPage(deps.cache, input);
+  const page = resolveCachedPage(deps.cache, { ...input, library });
   if (!page) {
     return errorResult("Document not found in local cache.", "NOT_FOUND", {
-      library: input.library,
+      library,
       version: input.version,
       ...(input.doc_path ? { doc_path: normalizeDocPath(input.doc_path) } : {}),
       ...(input.page_uid ? { page_uid: input.page_uid } : {}),
@@ -914,7 +897,7 @@ export async function getDoc(deps: AppDeps, input: GetDocInput): Promise<Command
       "Page metadata exists locally, but page content is not hydrated. Reinstall with install_docs or refresh with update_docs.",
       "PAGE_NOT_HYDRATED",
       {
-        library: input.library,
+        library,
         version: input.version,
         doc_path: page.docPath,
         page_uid: page.pageUid,
@@ -929,7 +912,7 @@ export async function getDoc(deps: AppDeps, input: GetDocInput): Promise<Command
 
   if ((page.content ?? "").length === 0) {
     return errorResult("Page content is empty.", "EMPTY_CONTENT", {
-      library: input.library,
+      library,
       version: input.version,
       doc_path: page.docPath,
       page_uid: page.pageUid,
@@ -946,21 +929,22 @@ export async function getDoc(deps: AppDeps, input: GetDocInput): Promise<Command
 export async function updateDocs(deps: AppDeps, input: { library?: string }): Promise<CommandResult> {
   const { cache, indexer, registryClient } = deps;
   const installed = cache.listInstalled();
+  const library = input.library ? (normalizeLibrarySlug(input.library) ?? undefined) : undefined;
 
-  if (input.library && !parseLibrary(input.library)) {
+  if (input.library && !library) {
     return errorResult(
-      "library must be in namespace/name format (for example 'vercel/nextjs').",
+      "library must be a canonical slug (for example 'nextjs').",
       "INVALID_LIBRARY",
     );
   }
 
-  const targets = input.library
-    ? installed.filter(lib => librarySlug(lib.namespace, lib.name) === input.library)
+  const targets = library
+    ? installed.filter(lib => lib.slug === library)
     : installed;
 
   if (targets.length === 0) {
     return structuredTextResult(
-      input.library ? `${input.library} is not installed. Use install_docs first.` : "No documentation packages installed.",
+      library ? `${library} is not installed. Use install_docs first.` : "No documentation packages installed.",
       { results: [] },
     );
   }
@@ -970,18 +954,18 @@ export async function updateDocs(deps: AppDeps, input: { library?: string }): Pr
 
   for (const lib of targets) {
     try {
-      reportProgress(deps, `Checking ${librarySlug(lib.namespace, lib.name)} for updates...`);
-      const resolved = await registryClient.resolve({ query: librarySlug(lib.namespace, lib.name) });
+      reportProgress(deps, `Checking ${lib.slug} for updates...`);
+      const resolved = await registryClient.resolve({ query: lib.slug });
       const targetVersion = resolved.data.version.version;
-      const manifest = await registryClient.getManifest(lib.namespace, lib.name, targetVersion);
+      const manifest = await registryClient.getManifest(lib.slug, targetVersion);
       const targetChecksum = manifest.data.provenance?.manifest_checksum ?? null;
       const versionChanged = targetVersion !== lib.version;
       const checksumChanged = targetChecksum !== lib.manifest_checksum;
 
       if (!versionChanged && !checksumChanged) {
-        messages.push(`${librarySlug(lib.namespace, lib.name)}@${lib.version}: already up to date`);
+        messages.push(`${lib.slug}@${lib.version}: already up to date`);
         results.push({
-          library: librarySlug(lib.namespace, lib.name),
+          library: lib.slug,
           version: lib.version,
           status: "unchanged",
           manifest_checksum: targetChecksum,
@@ -989,12 +973,12 @@ export async function updateDocs(deps: AppDeps, input: { library?: string }): Pr
         continue;
       }
 
-      const installOutcome = await installResolvedVersion(deps, lib.namespace, lib.name, targetVersion, manifest.data);
+      const installOutcome = await installResolvedVersion(deps, lib.slug, targetVersion, manifest.data);
 
       if (versionChanged) {
-        await indexer.removeLibraryVersion(lib.namespace, lib.name, lib.version);
-        cache.removeVersion(lib.namespace, lib.name, lib.version);
-        cache.removeInstalled(lib.namespace, lib.name, lib.version);
+        await indexer.removeLibraryVersion(lib.slug, lib.version);
+        cache.removeVersion(lib.slug, lib.version);
+        cache.removeInstalled(lib.slug, lib.version);
       }
 
       cache.addInstalled({
@@ -1007,9 +991,9 @@ export async function updateDocs(deps: AppDeps, input: { library?: string }): Pr
         index_schema_version: DOC_INDEX_SCHEMA_VERSION,
       });
 
-      let message = `${librarySlug(lib.namespace, lib.name)}: ${lib.version} → ${targetVersion}`;
+      let message = `${lib.slug}: ${lib.version} → ${targetVersion}`;
       if (!versionChanged) {
-        message = `${librarySlug(lib.namespace, lib.name)}@${lib.version}: refreshed in place`;
+        message = `${lib.slug}@${lib.version}: refreshed in place`;
       }
       message += ` (${installOutcome.pageCount} pages, ${installOutcome.indexedCount} indexed via ${installOutcome.installMethod})`;
       if (installOutcome.bundleFallbackReason) {
@@ -1017,7 +1001,7 @@ export async function updateDocs(deps: AppDeps, input: { library?: string }): Pr
       }
       messages.push(message);
       results.push({
-        library: librarySlug(lib.namespace, lib.name),
+        library: lib.slug,
         previous_version: lib.version,
         version: targetVersion,
         status: versionChanged ? "updated" : "refreshed",
@@ -1030,9 +1014,9 @@ export async function updateDocs(deps: AppDeps, input: { library?: string }): Pr
         ...(installOutcome.bundleFallbackReason ? { bundle_fallback_reason: installOutcome.bundleFallbackReason } : {}),
       });
     } catch (error) {
-      messages.push(`${librarySlug(lib.namespace, lib.name)}: update failed — ${(error as Error).message}`);
+      messages.push(`${lib.slug}: update failed — ${(error as Error).message}`);
       results.push({
-        library: librarySlug(lib.namespace, lib.name),
+        library: lib.slug,
         version: lib.version,
         status: "failed",
         error: (error as Error).message,
@@ -1044,13 +1028,13 @@ export async function updateDocs(deps: AppDeps, input: { library?: string }): Pr
 }
 
 export async function removeDocs(deps: AppDeps, input: { library: string; version?: string }): Promise<CommandResult> {
-  const parsed = parseLibrary(input.library);
-  if (!parsed) {
-    return errorResult("Error: library must be in namespace/name format", "INVALID_LIBRARY");
+  const library = normalizeLibrarySlug(input.library);
+  if (!library) {
+    return errorResult("Error: library must be a canonical slug", "INVALID_LIBRARY");
   }
 
   const targets = deps.cache.listInstalled().filter(lib => {
-    if (lib.namespace !== parsed.namespace || lib.name !== parsed.name) {
+    if (lib.slug !== library) {
       return false;
     }
     return !input.version || lib.version === input.version;
@@ -1058,21 +1042,21 @@ export async function removeDocs(deps: AppDeps, input: { library: string; versio
 
   if (targets.length === 0) {
     return errorResult(
-      input.version ? `${input.library}@${input.version} is not installed.` : `${input.library} is not installed.`,
+      input.version ? `${library}@${input.version} is not installed.` : `${library} is not installed.`,
       "NOT_INSTALLED",
     );
   }
 
   for (const target of targets) {
-    await deps.indexer.removeLibraryVersion(target.namespace, target.name, target.version);
-    deps.cache.removeVersion(target.namespace, target.name, target.version);
-    deps.cache.removeInstalled(target.namespace, target.name, target.version);
+    await deps.indexer.removeLibraryVersion(target.slug, target.version);
+    deps.cache.removeVersion(target.slug, target.version);
+    deps.cache.removeInstalled(target.slug, target.version);
   }
 
   return structuredTextResult(
     `Removed ${targets.length} documentation package${targets.length === 1 ? "" : "s"} for ${input.library}.`,
     {
-      library: input.library,
+      library,
       removed_versions: targets.map(target => target.version),
     },
   );

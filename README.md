@@ -9,18 +9,19 @@ Requires Node.js >= 22.0.0.
 ### Library Management
 
 ```bash
-contextqmd libraries search "inertia rails"
-contextqmd libraries install "inertia rails" --version 3.17.0
+contextqmd libraries search "laravel"
+contextqmd libraries install laravel --version 12.x
+contextqmd libraries install laravel kamal
 contextqmd libraries list
-contextqmd libraries update inertiajs/inertia-rails
-contextqmd libraries remove inertiajs/inertia-rails --version 3.17.0
+contextqmd libraries update laravel
+contextqmd libraries remove laravel --version 12.x
 ```
 
 ### Documentation Search & Retrieval
 
 ```bash
-contextqmd docs search "file uploads" --library inertiajs/inertia-rails --version 3.17.0 --mode hybrid
-contextqmd docs get --library inertiajs/inertia-rails --version 3.17.0 --doc-path guides/forms.md --from-line 120 --max-lines 80
+contextqmd docs search "authentication guards" --library laravel --version 12.x --mode hybrid
+contextqmd docs get --library laravel --version 12.x --doc-path authentication.md --from-line 120 --max-lines 80
 ```
 
 Search modes: `fts` (full-text), `vector`, `hybrid`, `auto` (default — heuristic picks based on query shape).
