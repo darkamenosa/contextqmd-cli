@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -350,6 +350,19 @@ describe("contextqmd CLI", () => {
     expect(isCliEntrypoint(symlinkPath, pathToFileURL(targetPath).href)).toBe(true);
   });
 
+  it("shows agent-friendly help with local docs workflows", async () => {
+    const result = await invoke(["--help"], process.env);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Quick Reference");
+    expect(result.stdout).toContain("For AI Agents");
+    expect(result.stdout).toContain("Local Docs");
+    expect(result.stdout).toContain("Search Modes (--mode)");
+    expect(result.stdout).toContain("libraries");
+    expect(result.stdout).toContain("local");
+    expect(result.stdout).toContain("docs");
+  });
+
   it("searches libraries directly against the registry API", async () => {
     const fixture = buildFixture();
     const registry = await startFakeRegistry(fixture);
@@ -545,5 +558,107 @@ describe("contextqmd CLI", () => {
 
     expect(list.exitCode).toBe(0);
     expect(JSON.parse(list.stdout)).toEqual({ results: [] });
+  });
+
+  it("adds local docs from files and directories for search, inspection, and removal", async () => {
+    const docsDir = mkdtempSync(join(process.cwd(), "tmp-contextqmd-local-docs-"));
+    const standaloneFile = join(process.cwd(), `tmp-contextqmd-standalone-${Date.now()}.txt`);
+    cleanups.push(() => rmSync(docsDir, { recursive: true, force: true }));
+    cleanups.push(() => rmSync(standaloneFile, { force: true }));
+
+    mkdirSync(join(docsDir, "guides"), { recursive: true });
+    writeFileSync(join(docsDir, "README.md"), "# Team Docs\n\nOverview for local docs.\n");
+    writeFileSync(join(docsDir, "guides", "auth.md"), "# Auth Guide\n\nSession cookies must be rotated.\n");
+    writeFileSync(standaloneFile, "# Ops Notes\n\nRunbook for queue drains.\n");
+
+    const add = await invoke(
+      ["--cache-dir", cacheDir, "--json", "local", "add", docsDir, standaloneFile, "--name", "team-docs"],
+      process.env,
+    );
+
+    expect(add.exitCode).toBe(0);
+    expect(JSON.parse(add.stdout)).toMatchObject({
+      library: "team-docs",
+      version: "local",
+      changed: true,
+      source_kind: "local",
+      page_count: 3,
+      source_paths: [docsDir, standaloneFile],
+    });
+
+    const list = await invoke(["--cache-dir", cacheDir, "--json", "local", "list"], process.env);
+    expect(list.exitCode).toBe(0);
+    expect(JSON.parse(list.stdout)).toMatchObject({
+      results: [
+        {
+          library: "team-docs",
+          version: "local",
+          source_kind: "local",
+          page_count: 3,
+          source_paths: [docsDir, standaloneFile],
+        },
+      ],
+    });
+
+    const show = await invoke(["--cache-dir", cacheDir, "--json", "local", "show", "team-docs"], process.env);
+    expect(show.exitCode).toBe(0);
+    expect(JSON.parse(show.stdout)).toMatchObject({
+      library: "team-docs",
+      version: "local",
+      source_kind: "local",
+      page_count: 3,
+      source_paths: [docsDir, standaloneFile],
+    });
+
+    const search = await invoke(
+      ["--cache-dir", cacheDir, "--json", "docs", "search", "queue drains", "--library", "team-docs", "--version", "local", "--mode", "fts"],
+      process.env,
+    );
+    expect(search.exitCode).toBe(0);
+    const searchJson = JSON.parse(search.stdout) as {
+      results: Array<{ page_uid: string; library: string; version: string }>;
+    };
+    expect(searchJson.results[0]).toMatchObject({
+      library: "team-docs",
+      version: "local",
+    });
+
+    const getDoc = await invoke(
+      ["--cache-dir", cacheDir, "docs", "get", "--library", "team-docs", "--version", "local", "--page-uid", searchJson.results[0].page_uid],
+      process.env,
+    );
+    expect(getDoc.exitCode).toBe(0);
+    expect(getDoc.stdout).toContain("queue drains");
+
+    const remove = await invoke(["--cache-dir", cacheDir, "--json", "local", "remove", "team-docs"], process.env);
+    expect(remove.exitCode).toBe(0);
+    expect(JSON.parse(remove.stdout)).toEqual({
+      library: "team-docs",
+      removed_versions: ["local"],
+      source_kind: "local",
+    });
+  });
+
+  it("skips local-only docs when running library updates", async () => {
+    const docsDir = mkdtempSync(join(process.cwd(), "tmp-contextqmd-local-update-"));
+    cleanups.push(() => rmSync(docsDir, { recursive: true, force: true }));
+    writeFileSync(join(docsDir, "README.md"), "# Local Only\n\nThis should not hit the registry.\n");
+
+    const add = await invoke(
+      ["--cache-dir", cacheDir, "--json", "local", "add", docsDir, "--name", "local-only"],
+      process.env,
+    );
+    expect(add.exitCode).toBe(0);
+
+    const update = await invoke(
+      ["--registry", "http://127.0.0.1:9", "--cache-dir", cacheDir, "--json", "libraries", "update"],
+      process.env,
+    );
+
+    expect(update.exitCode).toBe(0);
+    expect(JSON.parse(update.stdout)).toEqual({
+      results: [],
+      skipped_local: ["local-only"],
+    });
   });
 });

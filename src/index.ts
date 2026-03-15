@@ -9,12 +9,16 @@ import { DocIndexer } from "./lib/doc-indexer.js";
 import { LocalCache } from "./lib/local-cache.js";
 import { RegistryClient } from "./lib/registry-client.js";
 import {
+  addLocalDocs,
   getDoc,
   installDocs,
   listInstalledDocs,
+  listLocalDocs,
   removeDocs,
+  removeLocalDocs,
   searchDocs,
   searchLibraries,
+  showLocalDocs,
   type AppDeps,
   type CommandResult,
   updateDocs,
@@ -160,19 +164,96 @@ function globalOptionsFor(command: Command): GlobalOptions {
   return command.optsWithGlobals<GlobalOptions>();
 }
 
+function topLevelHelpText(): string {
+  return `
+──── Quick Reference ─────────────────────────────────────────────────
+
+  npm install -g contextqmd
+
+  contextqmd libraries search react
+  contextqmd libraries install react laravel
+  contextqmd docs search "useEffect cleanup" --library react
+  contextqmd docs get --library react --version 19.0.0 --doc-path hooks.md
+
+Registry Packages
+  libraries search <query>         Find libraries in the registry
+  libraries install <lib...>       Install docs (one or many at once)
+  libraries list                   Show installed packages
+  libraries update [lib]           Refresh installed packages
+  libraries remove <lib>           Remove a package
+
+Local Docs
+  local add <path...> --name X     Index local files as a searchable package
+  local list                       List local-only packages
+  local show <lib>                 Show source paths for a local package
+  local remove <lib>               Remove a local package
+
+Search & Retrieval
+  docs search <query>              Search installed docs
+  docs get --library --version     Retrieve a specific doc page
+
+Search Modes (--mode)
+  auto       Default. Classifies your query and picks the right mode.
+  fts        Short keywords, function names, exact terms.
+  vector     Conceptual questions ("how to handle auth").
+  hybrid     Long queries mixing keywords and concepts.
+
+──── For AI Agents ───────────────────────────────────────────────────
+
+When to use contextqmd
+  Your training data has a cutoff. Library APIs change between versions.
+  Use contextqmd to get version-accurate docs before writing code.
+
+  Reach for it when:
+  - You're about to use a library API you're not 100% sure about
+  - A user asks "how do I do X with library Y"
+  - You need to check method signatures, config options, or patterns
+  - You're debugging and suspect incorrect API usage
+
+Workflow
+  1. Check installed    contextqmd libraries list --json
+  2. Install            contextqmd libraries install <lib>
+  3. Search             contextqmd docs search "<query>" --library <lib> --json
+  4. Read the page      contextqmd docs get --library <lib> --version <ver> \\
+                           --doc-path <path> --json
+
+Tips
+  - Always pass --json for structured, parseable output.
+  - Use --mode fts for function/class names, --mode vector for conceptual questions.
+  - Use --around-line N --before 5 --after 20 to window into large pages.
+  - Install early: scan package.json / Gemfile and install all relevant docs upfront.
+  - If search returns nothing, rephrase: try the class name (fts) or
+    describe the concept differently (vector).
+  - Local docs (local add ./docs --name X) use version "local" and share the
+    same search index as registry packages.
+`.trimStart();
+}
+
+function localHelpText(): string {
+  return `
+Examples:
+  contextqmd local add ./docs --name app-docs
+  contextqmd local add README.md architecture/notes --name product-docs
+  contextqmd local show app-docs
+  contextqmd docs search "rate limits" --library app-docs --version local
+`.trimStart();
+}
+
 function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void): Command {
   const program = addGlobalOptions(new Command());
 
   program
     .name("contextqmd")
-    .description("CLI for ContextQMD")
+    .description("Local-first docs workflows for AI agents: registry packages, local docs, and searchable context.")
     .exitOverride()
+    .showHelpAfterError()
+    .addHelpText("after", `\n${topLevelHelpText()}\n`)
     .configureOutput({
       writeOut: chunk => io.writeStdout(chunk),
       writeErr: chunk => io.writeStderr(chunk),
     });
 
-  const libraries = program.command("libraries").description("Library package workflows");
+  const libraries = program.command("libraries").description("Registry package workflows");
   libraries
     .command("search")
     .argument("<query>", "Search query")
@@ -221,7 +302,45 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
       onExitCode(renderResult(result, global, io));
     });
 
-  const docs = program.command("docs").description("Installed documentation operations");
+  const local = program.command("local").description("Ad hoc local files and directories for docs search");
+  local.addHelpText("after", `\n${localHelpText()}\n`);
+  local
+    .command("add")
+    .argument("<paths...>", "Files or directories to index locally")
+    .option("--name <name>", "Library slug to use for these local docs")
+    .action(async function(paths: string[], options: { name?: string }) {
+      const global = globalOptionsFor(this);
+      const result = await withDeps(io.env, global, io, deps => addLocalDocs(deps, { paths, name: options.name }));
+      onExitCode(renderResult(result, global, io));
+    });
+
+  local
+    .command("list")
+    .action(async function() {
+      const global = globalOptionsFor(this);
+      const result = await withDeps(io.env, global, io, deps => listLocalDocs(deps));
+      onExitCode(renderResult(result, global, io));
+    });
+
+  local
+    .command("show")
+    .argument("<library>", "Local docs library slug")
+    .action(async function(library: string) {
+      const global = globalOptionsFor(this);
+      const result = await withDeps(io.env, global, io, deps => showLocalDocs(deps, { library }));
+      onExitCode(renderResult(result, global, io));
+    });
+
+  local
+    .command("remove")
+    .argument("<library>", "Local docs library slug")
+    .action(async function(library: string) {
+      const global = globalOptionsFor(this);
+      const result = await withDeps(io.env, global, io, deps => removeLocalDocs(deps, { library }));
+      onExitCode(renderResult(result, global, io));
+    });
+
+  const docs = program.command("docs").description("Search and read installed docs");
   docs
     .command("search")
     .argument("<query>", "Search query")
@@ -314,5 +433,5 @@ export async function runCli(argv: string[], inputIo: CliIo = {}): Promise<numbe
 
 if (isCliEntrypoint()) {
   const exitCode = await runCli(process.argv.slice(2));
-  process.exit(exitCode);
+  process.exitCode = exitCode;
 }

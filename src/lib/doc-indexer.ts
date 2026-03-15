@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import {
   createStore,
   extractSnippet,
+  type EmbedProgress,
   type HybridQueryResult,
   type InternalStore,
   type QMDStore,
-  type SearchResult,
 } from "@tobilu/qmd";
 import { normalizeDocPath, type LocalCache } from "./local-cache.js";
 
@@ -140,7 +140,12 @@ export class DocIndexer {
         ? existing
         : store.findActiveDocument(collectionName, legacyPath);
 
-      if (existing && existing.hash === hash) continue;
+      if (existing && existing.hash === hash) {
+        if (existing.title !== title) {
+          store.updateDocumentTitle(existing.id, title, now);
+        }
+        continue;
+      }
       if (!existing && legacyExisting && legacyExisting.hash === hash) {
         store.insertDocument(collectionName, docPath, title, legacyExisting.hash, now, now);
         if (legacyPath !== docPath) {
@@ -171,6 +176,12 @@ export class DocIndexer {
     return indexed;
   }
 
+  async embed(onProgress?: (info: EmbedProgress) => void): Promise<{ chunksEmbedded: number }> {
+    const store = await this.storePromise;
+    const result = await store.embed({ onProgress });
+    return { chunksEmbedded: result.chunksEmbedded };
+  }
+
   async removeLibraryVersion(slug: string, version: string): Promise<void> {
     const store = await this.getStore();
     const collectionName = DocIndexer.collectionName(slug, version);
@@ -178,6 +189,18 @@ export class DocIndexer {
     for (const path of paths) {
       store.deactivateDocument(collectionName, path);
     }
+  }
+
+  private resolveCollections(options: SearchOptions): string[] {
+    if (options.library && options.version) {
+      return [DocIndexer.collectionName(options.library, options.version)];
+    }
+    if (options.library) {
+      return this.cache.listInstalled()
+        .filter(lib => lib.slug === options.library)
+        .map(lib => DocIndexer.collectionName(lib.slug, lib.version));
+    }
+    return [];
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
@@ -189,15 +212,14 @@ export class DocIndexer {
 
     const requestedMode = options.mode ?? "auto";
     const effectiveMode = requestedMode === "auto" ? classifyQuery(query) : requestedMode;
-    const searchMode = !options.library && effectiveMode !== "fts" ? "fts" : effectiveMode;
 
-    if (searchMode === "vector") {
+    if (effectiveMode === "vector") {
       const results = await this.searchVector(query, options);
       if (results.length > 0) return results;
       return (await this.searchFTS(query, options)).map(result => ({ ...result, searchMode: "fts" as SearchMode }));
     }
 
-    if (searchMode === "hybrid") {
+    if (effectiveMode === "hybrid") {
       const results = await this.searchHybrid(query, options);
       if (results.length > 0) return results;
       return (await this.searchFTS(query, options)).map(result => ({ ...result, searchMode: "fts" as SearchMode }));
@@ -209,11 +231,8 @@ export class DocIndexer {
   async searchFTS(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
     const store = await this.getStore();
     const limit = options.maxResults ?? 10;
-    let collectionFilter: string | undefined;
-
-    if (options.library && options.version) {
-      collectionFilter = DocIndexer.collectionName(options.library, options.version);
-    }
+    const collections = this.resolveCollections(options);
+    const collectionFilter = collections.length === 1 ? collections[0] : undefined;
 
     const results = store.searchFTS(query, limit * 2, collectionFilter);
     return this.mapAnyResults(results, query, options, "fts").slice(0, limit);
@@ -222,11 +241,8 @@ export class DocIndexer {
   async searchVector(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
     const store = await this.storePromise;
     const limit = options.maxResults ?? 10;
-    let collectionFilter: string | undefined;
-
-    if (options.library && options.version) {
-      collectionFilter = DocIndexer.collectionName(options.library, options.version);
-    }
+    const collections = this.resolveCollections(options);
+    const collectionFilter = collections.length === 1 ? collections[0] : undefined;
 
     try {
       const results = await withTimeout(
@@ -234,10 +250,11 @@ export class DocIndexer {
           collection: collectionFilter,
           limit: limit * 2,
         }),
-        10_000,
+        30_000,
       );
       return this.mapAnyResults(results, query, options, "vector").slice(0, limit);
-    } catch {
+    } catch (error) {
+      console.warn(`[contextqmd] vector search failed, falling back to FTS: ${(error as Error).message}`);
       return [];
     }
   }
@@ -245,16 +262,20 @@ export class DocIndexer {
   async searchHybrid(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
     const store = await this.storePromise;
     const limit = options.maxResults ?? 10;
-    let collectionFilter: string | undefined;
-
-    if (options.library && options.version) {
-      collectionFilter = DocIndexer.collectionName(options.library, options.version);
-    }
+    const collections = this.resolveCollections(options);
 
     try {
       const results = await withTimeout(
-        store.search({ query, collection: collectionFilter, limit }),
-        10_000,
+        store.search({
+          query,
+          ...(collections.length === 1
+            ? { collection: collections[0] }
+            : collections.length > 1
+              ? { collections }
+              : {}),
+          limit,
+        }),
+        60_000,
       );
       return this.mapAnyResults<HybridQueryResult>(
         results,
@@ -263,7 +284,8 @@ export class DocIndexer {
         "hybrid",
         result => this.extractSnippetInfo(result.body ?? "", query, result.bestChunkPos),
       ).slice(0, limit);
-    } catch {
+    } catch (error) {
+      console.warn(`[contextqmd] hybrid search failed, falling back to FTS: ${(error as Error).message}`);
       return [];
     }
   }

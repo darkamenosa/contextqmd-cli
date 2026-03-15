@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { dirname, join, posix } from "node:path";
 import { DocIndexer, type SearchMode } from "./doc-indexer.js";
 import { LocalCache, normalizeDocPath, type InstalledLibrary } from "./local-cache.js";
+import { inferLocalDocsSlug, LOCAL_DOCS_VERSION, stageLocalDocsPackage } from "./local-docs.js";
 import { RegistryClient } from "./registry-client.js";
 import type { Manifest, ManifestBundle, PageRecord } from "./types.js";
 
@@ -41,6 +42,11 @@ export interface SearchDocsInput {
   version?: string;
   max_results?: number;
   mode?: SearchMode;
+}
+
+export interface AddLocalDocsInput {
+  paths: string[];
+  name?: string;
 }
 
 export interface GetDocInput {
@@ -98,6 +104,16 @@ type SearchDocsResult = {
   results: Array<Record<string, unknown>>;
 };
 
+type LocalDocsResult = {
+  library: string;
+  version: string;
+  source_kind: "local";
+  page_count: number;
+  installed_at: string;
+  source_paths: string[];
+  display_name?: string;
+};
+
 function textResult(text: string): CommandResult {
   return { text };
 }
@@ -116,6 +132,26 @@ function errorResult(text: string, code: string, details: Record<string, unknown
         ...details,
       },
     },
+  };
+}
+
+function isLocalDocsInstall(installed: InstalledLibrary): boolean {
+  return installed.source_kind === "local" || installed.version === LOCAL_DOCS_VERSION;
+}
+
+function isRegistryInstall(installed: InstalledLibrary): boolean {
+  return !isLocalDocsInstall(installed);
+}
+
+function localDocsResult(installed: InstalledLibrary): LocalDocsResult {
+  return {
+    library: installed.slug,
+    version: installed.version,
+    source_kind: "local",
+    page_count: installed.page_count,
+    installed_at: installed.installed_at,
+    source_paths: installed.source_paths ?? [],
+    ...(installed.display_name ? { display_name: installed.display_name } : {}),
   };
 }
 
@@ -398,6 +434,7 @@ async function ensureCurrentIndexSchema(
     if ((lib.index_schema_version ?? 0) >= DOC_INDEX_SCHEMA_VERSION) continue;
     await indexer.removeLibraryVersion(lib.slug, lib.version);
     await indexer.indexLibraryVersion(lib.slug, lib.version);
+    await indexer.embed();
     cache.addInstalled({
       ...lib,
       page_count: cache.countPages(lib.slug, lib.version),
@@ -635,6 +672,12 @@ async function installResolvedVersion(
 
     reportProgress(deps, `Indexing ${install.pageCount} pages for local search...`);
     const indexedCount = await indexer.indexLibraryVersion(slug, version);
+    reportProgress(deps, `Generating embeddings for vector search...`);
+    await indexer.embed((info) => {
+      if (info.totalChunks > 0) {
+        reportProgress(deps, `Embedding: ${info.chunksEmbedded}/${info.totalChunks} chunks`);
+      }
+    });
     if (backupDir) {
       cache.discardBackup(backupDir);
     }
@@ -661,6 +704,79 @@ async function installResolvedVersion(
       cache.removeVersion(slug, version);
     }
     throw error;
+  }
+}
+
+export async function addLocalDocs(deps: AppDeps, input: AddLocalDocsInput): Promise<CommandResult> {
+  if (input.paths.length === 0) {
+    return errorResult("Provide at least one local file or directory.", "INVALID_ARGUMENTS");
+  }
+
+  const { slug, displayName } = inferLocalDocsSlug(input.paths, input.name);
+  const existing = deps.cache.findInstalled(slug, LOCAL_DOCS_VERSION);
+  if (existing && !isLocalDocsInstall(existing)) {
+    return errorResult(
+      `${slug}@${LOCAL_DOCS_VERSION} is already reserved by a non-local package.`,
+      "NAME_CONFLICT",
+      { library: slug, version: LOCAL_DOCS_VERSION },
+    );
+  }
+
+  const backupDir = existing ? deps.cache.backupVersion(slug, LOCAL_DOCS_VERSION) : null;
+  const stagingRoot = deps.cache.createTempInstallDir(slug, LOCAL_DOCS_VERSION);
+  const stagedDocsDir = join(stagingRoot, "docs");
+
+  try {
+    mkdirSync(stagedDocsDir, { recursive: true });
+    reportProgress(deps, `Collecting local docs for ${slug}@${LOCAL_DOCS_VERSION}...`);
+    const staged = stageLocalDocsPackage(stagedDocsDir, slug, displayName, input.paths);
+    deps.cache.commitStagedVersion(slug, LOCAL_DOCS_VERSION, stagedDocsDir);
+    reportProgress(deps, `Indexing ${staged.pageCount} local docs for search...`);
+    const indexedCount = await deps.indexer.indexLibraryVersion(slug, LOCAL_DOCS_VERSION);
+    reportProgress(deps, `Generating embeddings for vector search...`);
+    await deps.indexer.embed();
+    if (backupDir) {
+      deps.cache.discardBackup(backupDir);
+    }
+
+    const installedAt = new Date().toISOString();
+    deps.cache.addInstalled({
+      slug,
+      version: LOCAL_DOCS_VERSION,
+      profile: "full",
+      installed_at: installedAt,
+      manifest_checksum: staged.manifestChecksum,
+      page_count: staged.pageCount,
+      index_schema_version: DOC_INDEX_SCHEMA_VERSION,
+      source_kind: "local",
+      source_paths: staged.sourcePaths,
+      display_name: staged.displayName,
+    });
+
+    return structuredTextResult(
+      `Added local docs as ${slug}@${LOCAL_DOCS_VERSION}\n  Sources: ${staged.sourcePaths.join(", ")}\n  Indexed: ${indexedCount} pages for search`,
+      {
+        library: slug,
+        version: LOCAL_DOCS_VERSION,
+        changed: true,
+        source_kind: "local",
+        page_count: staged.pageCount,
+        indexed_count: indexedCount,
+        source_paths: staged.sourcePaths,
+        ...(staged.displayName ? { display_name: staged.displayName } : {}),
+      },
+    );
+  } catch (error) {
+    await deps.indexer.removeLibraryVersion(slug, LOCAL_DOCS_VERSION);
+    if (backupDir) {
+      deps.cache.restoreVersionFromBackup(slug, LOCAL_DOCS_VERSION, backupDir);
+    } else {
+      deps.cache.removeVersion(slug, LOCAL_DOCS_VERSION);
+      deps.cache.removeInstalled(slug, LOCAL_DOCS_VERSION);
+    }
+    return errorResult((error as Error).message, "LOCAL_DOCS_ADD_FAILED", { library: slug, version: LOCAL_DOCS_VERSION });
+  } finally {
+    deps.cache.cleanupTempPath(stagingRoot);
   }
 }
 
@@ -749,6 +865,8 @@ export async function installDocs(deps: AppDeps, input: InstallDocsInput): Promi
     manifest_checksum: outcome.manifestChecksum,
     page_count: outcome.pageCount,
     index_schema_version: DOC_INDEX_SCHEMA_VERSION,
+    source_kind: "registry",
+    display_name: resolved.data.library.display_name,
   });
 
   const installLine = outcome.installMethod === "bundle"
@@ -788,9 +906,59 @@ export function listInstalledDocs(deps: AppDeps): CommandResult {
     page_count: lib.page_count,
     installed_at: lib.installed_at,
     manifest_checksum: lib.manifest_checksum,
+    source_kind: lib.source_kind ?? "registry",
+    ...(lib.source_paths ? { source_paths: lib.source_paths } : {}),
+    ...(lib.display_name ? { display_name: lib.display_name } : {}),
   }));
-  const lines = results.map(result => `- ${result.library}@${result.version} (${result.profile}, ${result.page_count} pages)`);
+  const lines = results.map(result => {
+    const sourceLabel = result.source_kind === "local" ? "local" : result.profile;
+    return `- ${result.library}@${result.version} (${sourceLabel}, ${result.page_count} pages)`;
+  });
   return structuredTextResult(`Installed documentation packages:\n\n${lines.join("\n")}`, { results });
+}
+
+export function listLocalDocs(deps: AppDeps): CommandResult {
+  const results = deps.cache.listInstalled()
+    .filter(isLocalDocsInstall)
+    .map(localDocsResult);
+
+  if (results.length === 0) {
+    return structuredTextResult("No local docs installed. Use `contextqmd local add <path>` to add some.", { results: [] });
+  }
+
+  const lines = results.map(result => `- ${result.library}@${result.version} (${result.page_count} pages)`);
+  return structuredTextResult(`Local docs:\n\n${lines.join("\n")}`, { results });
+}
+
+export function showLocalDocs(deps: AppDeps, input: { library: string }): CommandResult {
+  const library = normalizeLibrarySlug(input.library);
+  if (!library) {
+    return errorResult("Error: library must be a canonical slug", "INVALID_LIBRARY");
+  }
+
+  const installed = deps.cache.findInstalled(library, LOCAL_DOCS_VERSION);
+  if (!installed || !isLocalDocsInstall(installed)) {
+    return errorResult(`${library}@${LOCAL_DOCS_VERSION} is not installed.`, "NOT_INSTALLED");
+  }
+
+  const result = localDocsResult(installed);
+  const sourceLines = result.source_paths.map(path => `- ${path}`);
+  return structuredTextResult(
+    `${result.library}@${result.version}\nPages: ${result.page_count}\nSources:\n${sourceLines.join("\n")}`,
+    result,
+  );
+}
+
+export async function removeLocalDocs(deps: AppDeps, input: { library: string }): Promise<CommandResult> {
+  const removed = await removeDocs(deps, { library: input.library, version: LOCAL_DOCS_VERSION });
+  if (removed.isError) {
+    return removed;
+  }
+
+  return structuredTextResult(removed.text, {
+    ...(removed.structuredContent ?? {}),
+    source_kind: "local",
+  });
 }
 
 export async function searchDocs(deps: AppDeps, input: SearchDocsInput): Promise<CommandResult> {
@@ -938,14 +1106,23 @@ export async function updateDocs(deps: AppDeps, input: { library?: string }): Pr
     );
   }
 
-  const targets = library
+  const filtered = library
     ? installed.filter(lib => lib.slug === library)
     : installed;
+  const skippedLocal = filtered.filter(isLocalDocsInstall).map(lib => lib.slug);
+  const targets = filtered.filter(isRegistryInstall);
 
   if (targets.length === 0) {
     return structuredTextResult(
-      library ? `${library} is not installed. Use install_docs first.` : "No documentation packages installed.",
-      { results: [] },
+      skippedLocal.length > 0
+        ? "No registry documentation packages installed."
+        : library
+          ? `${library} is not installed. Use install_docs first.`
+          : "No documentation packages installed.",
+      {
+        results: [],
+        ...(skippedLocal.length > 0 ? { skipped_local: skippedLocal } : {}),
+      },
     );
   }
 
