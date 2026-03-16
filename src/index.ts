@@ -173,7 +173,7 @@ function topLevelHelpText(): string {
   contextqmd libraries search react
   contextqmd libraries install react laravel
   contextqmd docs search "useEffect cleanup" --library react
-  contextqmd docs get --library react --version 19.0.0 --doc-path hooks.md
+  contextqmd docs get --library react --doc-path hooks.md
 
 Registry Packages
   libraries search <query>         Find libraries in the registry
@@ -190,7 +190,7 @@ Local Docs
 
 Search & Retrieval
   docs search <query>              Search installed docs
-  docs get --library --version     Retrieve a specific doc page
+  docs get --library [--version]    Retrieve a specific doc page
 
 Search Modes (--mode)
   auto       Default. Classifies your query and picks the right mode.
@@ -214,8 +214,7 @@ Workflow
   1. Check installed    contextqmd libraries list --json
   2. Install            contextqmd libraries install <lib>
   3. Search             contextqmd docs search "<query>" --library <lib> --json
-  4. Read the page      contextqmd docs get --library <lib> --version <ver> \\
-                           --doc-path <path> --json
+  4. Read the page      contextqmd docs get --library <lib> --doc-path <path> --json
 
 Tips
   - Always pass --json for structured, parseable output.
@@ -367,7 +366,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
   docs
     .command("get")
     .requiredOption("--library <library>", "Library slug")
-    .requiredOption("--version <version>", "Installed version")
+    .option("--version <version>", "Installed version (defaults to latest installed)")
     .option("--doc-path <docPath>", "Canonical document path")
     .option("--page-uid <pageUid>", "Page UID fallback")
     .option("--from-line <line>", "Start line")
@@ -378,7 +377,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
     .option("--line-numbers", "Include line numbers")
     .action(async function(options: {
       library: string;
-      version: string;
+      version?: string;
       docPath?: string;
       pageUid?: string;
       fromLine?: string;
