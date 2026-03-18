@@ -674,12 +674,6 @@ async function installResolvedVersion(
 
     reportProgress(deps, `Indexing ${install.pageCount} pages for local search...`);
     const indexedCount = await indexer.indexLibraryVersion(slug, version);
-    reportProgress(deps, `Generating embeddings for vector search...`);
-    await indexer.embed((info) => {
-      if (info.totalChunks > 0) {
-        reportProgress(deps, `Embedding: ${info.chunksEmbedded}/${info.totalChunks} chunks`);
-      }
-    });
     if (backupDir) {
       cache.discardBackup(backupDir);
     }

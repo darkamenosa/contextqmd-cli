@@ -189,14 +189,15 @@ Local Docs
   local remove <lib>               Remove a local package
 
 Search & Retrieval
-  docs search <query>              Search installed docs
+  docs search <query>              Search installed docs (FTS by default)
   docs get --library [--version]    Retrieve a specific doc page
+  docs embed                       Generate vector embeddings (optional)
 
 Search Modes (--mode)
-  auto       Default. Classifies your query and picks the right mode.
+  auto       Default. Uses FTS; falls back gracefully without embeddings.
   fts        Short keywords, function names, exact terms.
-  vector     Conceptual questions ("how to handle auth").
-  hybrid     Long queries mixing keywords and concepts.
+  vector     Conceptual questions (requires: docs embed).
+  hybrid     Long queries mixing keywords and concepts (requires: docs embed).
 
 ──── For AI Agents ───────────────────────────────────────────────────
 
@@ -402,6 +403,28 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
           ...(options.lineNumbers ? { line_numbers: true } : {}),
         }));
       onExitCode(renderResult(result, global, io));
+    });
+
+  docs
+    .command("embed")
+    .description("Generate vector embeddings for installed docs (enables vector and hybrid search)")
+    .action(async function() {
+      const global = globalOptionsFor(this);
+      await withDeps(io.env, global, io, async deps => {
+        const { indexer } = deps;
+        deps.reportProgress?.("Generating embeddings for vector search...");
+        const result = await indexer.embed((info) => {
+          if (info.totalChunks > 0) {
+            deps.reportProgress?.(`Embedding: ${info.chunksEmbedded}/${info.totalChunks} chunks`);
+          }
+        });
+        if (global.json) {
+          io.writeStdout(JSON.stringify({ chunks_embedded: result.chunksEmbedded }, null, 2) + "\n");
+        } else {
+          io.writeStdout(`Done. ${result.chunksEmbedded} chunks embedded.\n`);
+        }
+        return result;
+      });
     });
 
   return program;
