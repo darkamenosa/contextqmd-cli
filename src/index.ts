@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const VERSION = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")).version as string;
 import { Command, CommanderError } from "commander";
 import { loadConfig } from "./lib/config.js";
 import { DocIndexer } from "./lib/doc-indexer.js";
@@ -244,6 +247,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   program
     .name("contextqmd")
+    .version(VERSION, "-V, --version")
     .description("Local-first docs workflows for AI agents: registry packages, local docs, and searchable context.")
     .exitOverride()
     .showHelpAfterError()

@@ -1,6 +1,22 @@
 {
   "name": "contextqmd",
-  "version": "0.2.2",
+  "version": "0.2.5",
+  "description": "Local-first docs CLI for AI agents: install, search, and read library documentation",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/contextqmd/contextqmd-cli.git"
+  },
+  "keywords": [
+    "documentation",
+    "docs",
+    "context",
+    "contextqmd",
+    "ai",
+    "search",
+    "local-first",
+    "cli"
+  ],
   "type": "module",
   "files": [
     "dist"
@@ -10,6 +26,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "check": "tsc --noEmit",
     "link": "npm link"
