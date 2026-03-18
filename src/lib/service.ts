@@ -1023,7 +1023,6 @@ export async function searchDocs(deps: AppDeps, input: SearchDocsInput): Promise
       doc_path: result.docPath,
       page_uid: result.pageUid,
       title: result.title,
-      content_md: result.contentMd,
       score: result.score,
       snippet: result.snippet,
       line_start: result.lineStart,
