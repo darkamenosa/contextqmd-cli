@@ -41,6 +41,32 @@ export interface DocSearchResult {
 }
 
 /**
+ * Pick the highest version from a list.
+ * Prefers "latest" > semver-like (highest numeric) > most recently added (last).
+ * Handles non-semver versions like "12.x", "stable", "v2.0" gracefully.
+ */
+function pickHighestVersion(versions: string[]): string | undefined {
+  if (versions.length === 0) return undefined;
+  if (versions.length === 1) return versions[0];
+  if (versions.includes("latest")) return "latest";
+
+  const scored = versions.map((v, index) => {
+    const nums = v.replace(/^v/i, "").split(/[.\-]/).map(Number).filter(n => !isNaN(n));
+    const score = nums.length > 0
+      ? (nums[0] ?? 0) * 1e6 + (nums[1] ?? 0) * 1e3 + (nums[2] ?? 0)
+      : -1;
+    return { version: v, score, index };
+  });
+
+  const numeric = scored.filter(s => s.score >= 0);
+  if (numeric.length > 0) {
+    return numeric.sort((a, b) => b.score - a.score)[0].version;
+  }
+
+  return versions[versions.length - 1];
+}
+
+/**
  * Sanitize a query string for FTS5.
  *
  * FTS5 treats `-` as the NOT operator and other punctuation as syntax.
@@ -211,9 +237,12 @@ export class DocIndexer {
       return [DocIndexer.collectionName(options.library, options.version)];
     }
     if (options.library) {
-      return this.cache.listInstalled()
+      const versions = this.cache.listInstalled()
         .filter(lib => lib.slug === options.library)
-        .map(lib => DocIndexer.collectionName(lib.slug, lib.version));
+        .map(lib => lib.version);
+      const best = pickHighestVersion(versions);
+      if (best) return [DocIndexer.collectionName(options.library, best)];
+      return [];
     }
     return [];
   }
