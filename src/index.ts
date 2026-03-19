@@ -446,7 +446,7 @@ export async function runCli(argv: string[], inputIo: CliIo = {}): Promise<numbe
     return exitCode;
   } catch (error) {
     if (error instanceof CommanderError) {
-      if (error.code !== "commander.helpDisplayed") {
+      if (error.code !== "commander.helpDisplayed" && error.code !== "commander.version") {
         io.writeStderr(`${error.message}\n`);
       }
       return error.exitCode;
