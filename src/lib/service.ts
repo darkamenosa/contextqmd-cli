@@ -434,7 +434,6 @@ async function ensureCurrentIndexSchema(
     if ((lib.index_schema_version ?? 0) >= DOC_INDEX_SCHEMA_VERSION) continue;
     await indexer.removeLibraryVersion(lib.slug, lib.version);
     await indexer.indexLibraryVersion(lib.slug, lib.version);
-    await indexer.embed();
     cache.addInstalled({
       ...lib,
       page_count: cache.countPages(lib.slug, lib.version),
@@ -729,8 +728,6 @@ export async function addLocalDocs(deps: AppDeps, input: AddLocalDocsInput): Pro
     deps.cache.commitStagedVersion(slug, LOCAL_DOCS_VERSION, stagedDocsDir);
     reportProgress(deps, `Indexing ${staged.pageCount} local docs for search...`);
     const indexedCount = await deps.indexer.indexLibraryVersion(slug, LOCAL_DOCS_VERSION);
-    reportProgress(deps, `Generating embeddings for vector search...`);
-    await deps.indexer.embed();
     if (backupDir) {
       deps.cache.discardBackup(backupDir);
     }
