@@ -123,28 +123,33 @@ function invalidArgumentsResult(message: string): CommandResult {
   };
 }
 
+function parseLibraryArg(arg: string): { library: string; version?: string } {
+  const atIndex = arg.lastIndexOf("@");
+  if (atIndex > 0) {
+    return { library: arg.slice(0, atIndex), version: arg.slice(atIndex + 1) };
+  }
+  return { library: arg };
+}
+
 async function installLibraries(
   deps: AppDeps,
   libraries: string[],
-  version?: string,
 ): Promise<CommandResult> {
-  if (version && libraries.length > 1) {
-    return invalidArgumentsResult("--version can only be used when installing a single library.");
-  }
-
   if (libraries.length === 1) {
-    return installDocs(deps, { library: libraries[0], version });
+    const parsed = parseLibraryArg(libraries[0]);
+    return installDocs(deps, { library: parsed.library, version: parsed.version });
   }
 
   const results: Array<Record<string, unknown>> = [];
   const output: string[] = [];
   let hasError = false;
 
-  for (const library of libraries) {
-    const result = await installDocs(deps, { library, version });
+  for (const lib of libraries) {
+    const parsed = parseLibraryArg(lib);
+    const result = await installDocs(deps, { library: parsed.library, version: parsed.version });
     output.push(result.text);
     results.push({
-      input: library,
+      input: lib,
       ...(result.structuredContent ?? {}),
     });
     hasError = hasError || Boolean(result.isError);
@@ -176,7 +181,7 @@ function topLevelHelpText(): string {
   contextqmd libraries search react
   contextqmd libraries install react laravel
   contextqmd docs search "useEffect cleanup" --library react
-  contextqmd docs get --library react --doc-path hooks.md
+  contextqmd docs get --library react@19.0.0 --doc-path hooks.md
 
 Registry Packages
   libraries search <query>         Find libraries in the registry
@@ -193,7 +198,7 @@ Local Docs
 
 Search & Retrieval
   docs search <query>              Search installed docs (FTS by default)
-  docs get --library [--version]    Retrieve a specific doc page
+  docs get --library slug[@ver]      Retrieve a specific doc page
   docs embed                       Generate vector embeddings (optional)
 
 Search Modes (--mode)
@@ -218,7 +223,7 @@ Workflow
   1. Check installed    contextqmd libraries list --json
   2. Install            contextqmd libraries install <lib>
   3. Search             contextqmd docs search "<query>" --library <lib> --json
-  4. Read the page      contextqmd docs get --library <lib> --doc-path <path> --json
+  4. Read the page      contextqmd docs get --library <lib>[@ver] --doc-path <path> --json
 
 Tips
   - Always pass --json for structured, parseable output.
@@ -238,7 +243,7 @@ Examples:
   contextqmd local add ./docs --name app-docs
   contextqmd local add README.md architecture/notes --name product-docs
   contextqmd local show app-docs
-  contextqmd docs search "rate limits" --library app-docs --version local
+  contextqmd docs search "rate limits" --library app-docs@local
 `.trimStart();
 }
 
@@ -247,7 +252,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   program
     .name("contextqmd")
-    .version(VERSION, "-V, --version")
+    .version(VERSION, "-v, --version")
     .description("Local-first docs workflows for AI agents: registry packages, local docs, and searchable context.")
     .exitOverride()
     .showHelpAfterError()
@@ -271,11 +276,10 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   libraries
     .command("install")
-    .argument("<libraries...>", "Library queries or slugs")
-    .option("--version <version>", "Version to install")
-    .action(async function(libraries: string[], options: { version?: string }) {
+    .argument("<libraries...>", "Library slugs (use slug@version for a specific version, e.g. sentry@26.3.1)")
+    .action(async function(libraries: string[]) {
       const global = globalOptionsFor(this);
-      const result = await withDeps(io.env, global, io, deps => installLibraries(deps, libraries, options.version));
+      const result = await withDeps(io.env, global, io, deps => installLibraries(deps, libraries));
       onExitCode(renderResult(result, global, io));
     });
 
@@ -298,11 +302,11 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   libraries
     .command("remove")
-    .argument("<library>", "Library slug")
-    .option("--version <version>", "Installed version to remove")
-    .action(async function(library: string, options: { version?: string }) {
+    .argument("<library>", "Library slug (use slug@version to remove a specific version)")
+    .action(async function(library: string) {
       const global = globalOptionsFor(this);
-      const result = await withDeps(io.env, global, io, deps => removeDocs(deps, { library, version: options.version }));
+      const parsed = parseLibraryArg(library);
+      const result = await withDeps(io.env, global, io, deps => removeDocs(deps, { library: parsed.library, version: parsed.version }));
       onExitCode(renderResult(result, global, io));
     });
 
@@ -348,20 +352,20 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
   docs
     .command("search")
     .argument("<query>", "Search query")
-    .option("--library <library>", "Filter to a specific library")
-    .option("--version <version>", "Filter to a specific version")
+    .option("--library <library>", "Filter to a specific library (use slug@version for a specific version)")
     .option("--mode <mode>", "Search mode")
     .option("--max-results <count>", "Maximum results to return")
     .action(async function(
       query: string,
-      options: { library?: string; version?: string; mode?: string; maxResults?: string },
+      options: { library?: string; mode?: string; maxResults?: string },
     ) {
       const global = globalOptionsFor(this);
+      const parsed = options.library ? parseLibraryArg(options.library) : { library: undefined, version: undefined };
       const result = await withDeps(io.env, global, io, deps =>
         searchDocs(deps, {
           query,
-          ...(options.library ? { library: options.library } : {}),
-          ...(options.version ? { version: options.version } : {}),
+          ...(parsed.library ? { library: parsed.library } : {}),
+          ...(parsed.version ? { version: parsed.version } : {}),
           ...(options.mode ? { mode: options.mode as never } : {}),
           ...(options.maxResults ? { max_results: Number(options.maxResults) } : {}),
         }));
@@ -370,8 +374,7 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
 
   docs
     .command("get")
-    .requiredOption("--library <library>", "Library slug")
-    .option("--version <version>", "Installed version (defaults to latest installed)")
+    .requiredOption("--library <library>", "Library slug (use slug@version for a specific version)")
     .option("--doc-path <docPath>", "Canonical document path")
     .option("--page-uid <pageUid>", "Page UID fallback")
     .option("--from-line <line>", "Start line")
@@ -382,7 +385,6 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
     .option("--line-numbers", "Include line numbers")
     .action(async function(options: {
       library: string;
-      version?: string;
       docPath?: string;
       pageUid?: string;
       fromLine?: string;
@@ -393,10 +395,11 @@ function createProgram(io: Required<CliIo>, onExitCode: (code: number) => void):
       lineNumbers?: boolean;
     }) {
       const global = globalOptionsFor(this);
+      const parsed = parseLibraryArg(options.library);
       const result = await withDeps(io.env, global, io, deps =>
         getDoc(deps, {
-          library: options.library,
-          version: options.version,
+          library: parsed.library,
+          version: parsed.version,
           ...(options.docPath ? { doc_path: options.docPath } : {}),
           ...(options.pageUid ? { page_uid: options.pageUid } : {}),
           ...(options.fromLine ? { from_line: Number(options.fromLine) } : {}),
